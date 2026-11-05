@@ -73,8 +73,8 @@ jobs:
           /usr/libexec/PlistBuddy -c "Print :UTExportedTypeDeclarations:0:UTTypeIdentifier" "$PLIST" | grep -qx com.huasideload.hwt
           /usr/libexec/PlistBuddy -c "Print :UTExportedTypeDeclarations:0:UTTypeTagSpecification:public.filename-extension:0" "$PLIST" | grep -qx hwt
           /usr/libexec/PlistBuddy -c "Print :CFBundleDocumentTypes:0:LSItemContentTypes:0" "$PLIST" | grep -qx com.huasideload.hwt
-          /usr/libexec/PlistBuddy -c "Print :UIFileSharingEnabled" "$PLIST" | grep -qx true
-          echo ".hwt document type, file type and Files sharing are in the built Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :LSSupportsOpeningDocumentsInPlace" "$PLIST" | grep -qx false
+          echo ".hwt file type and document type are in the built Info.plist"
 
       - uses: actions/upload-artifact@v4
         with:
