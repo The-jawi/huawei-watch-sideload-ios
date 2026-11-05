@@ -11,6 +11,9 @@ struct ContentView: View {
     @FocusState private var messageFocused: Bool
     @State private var pickingMusic = false
     @State private var pickingWatchFace = false
+    @ObservedObject private var library = FaceLibrary.shared
+    @State private var faceSearch = ""
+    @State private var importStatus: String?
     // Filming mode: only what a video needs (no log controls, no feature sections, no identity buttons).
     // Offered only when a feature asks for it (WatchFeature.offersFilmMode); the plain app never shows it.
     @AppStorage("filmModeV2") private var filmModeOn = false
@@ -54,6 +57,7 @@ struct ContentView: View {
                 } else {
                     pairFirstSection
                 }
+                if !filmMode { faceLibrarySection }
             }
             .tabItem { Label(L("Install", "Yükle"), systemImage: "square.and.arrow.down") }
             .tag(Tab.install)
@@ -80,6 +84,12 @@ struct ContentView: View {
             .tabItem { Label(L("Log", "Log"), systemImage: "list.bullet.rectangle") }
             .tag(Tab.log)
         }
+        // .hwt from Files ("Open in…", share sheet) or AirDrop: into the library (FaceLibrary)
+        .onOpenURL { url in
+            tab = .install
+            importFaces([url])
+        }
+        .task { await library.adoptUntrackedFiles() }
         // While filming, identities (UDID, serial number, MAC) always stay masked, in the log too
         .onAppear { if filmMode { link.revealIdentity = false } }
         .onChange(of: filmMode) { _, on in if on { link.revealIdentity = false } }
@@ -313,11 +323,6 @@ struct ContentView: View {
                     }
                 }
             }
-            if !filmMode {
-                Button(L("Install a watch face (.hwt)", "Saate kadran yükle (.hwt)")) { pickingWatchFace = true }
-                    .disabled(link.busy != nil)
-                    .fontWeight(WatchFaceCatalog.all.isEmpty ? .semibold : .regular)
-            }
         } header: {
             Text(L("Watch faces", "Kadranlar"))
         } footer: {
@@ -326,8 +331,87 @@ struct ContentView: View {
                        "Bu saatin ekranı için Huawei Theme Studio ile yapılan kadranlar (.hwt). Uygulama önce paketin ekranını saatle karşılaştırır, sonra her aşamayı gösterir: aktarıldı, saat onayladı, kuruldu (saatin listesinde), etkin. Gelen iki kadran 466×466 yuvarlak ekranlar içindir."))
             }
         }
-        .fileImporter(isPresented: $pickingWatchFace, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
-            if case .success(let urls) = result, let url = urls.first { link.installWatchFace(url) }
+    }
+
+    // Watch faces kept on this iPhone (FaceLibrary). Shown without a watch too: importing needs none.
+    private var faceLibrarySection: some View {
+        Section {
+            Button(L("Import watch faces (.hwt)…", "Kadran içe aktar (.hwt)…")) { pickingWatchFace = true }
+                .fontWeight(.semibold)
+            if let importStatus {
+                Text(importStatus).font(.footnote).foregroundStyle(.secondary)
+            }
+            if library.entries.count > 4 {
+                TextField(L("Search", "Ara"), text: $faceSearch)
+            }
+            ForEach(library.visible(search: faceSearch)) { entry in
+                faceRow(entry)
+            }
+        } header: {
+            Text(L("Watch face library (on this iPhone)", "Kadran kütüphanesi (bu iPhone'da)"))
+        } footer: {
+            Text(L("Imported faces are copied into the app and kept here; they are also in the Files app under On My iPhone > HuaSideload > Watch Faces. You can also send a .hwt to the app from Files with Share or \"Open in\". Deleting removes only the copy on this iPhone, never anything on the watch.",
+                   "İçe aktarılan kadranlar uygulamaya kopyalanır ve burada kalır; Dosyalar uygulamasında iPhone'umda > HuaSideload > Watch Faces altında da görünür. Dosyalar'dan Paylaş ya da \"Birlikte aç\" ile de .hwt gönderebilirsin. Silmek yalnızca bu iPhone'daki kopyayı siler, saatte hiçbir şeyi silmez."))
+        }
+        .fileImporter(isPresented: $pickingWatchFace, allowedContentTypes: [.hwt, .data], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls): importFaces(urls)
+            case .failure(let error): importStatus = error.localizedDescription
+            }
+        }
+    }
+
+    private func faceRow(_ entry: FaceLibrary.Entry) -> some View {
+        let compatibility = WatchFaceCompatibility.evaluate(screenCode: entry.screen, device: link.watchFaceParams)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(entry.title).font(.body.weight(.semibold))
+                Spacer()
+                Button { library.toggleFavorite(entry) } label: {
+                    Image(systemName: entry.favorite ? "star.fill" : "star")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(entry.favorite ? L("Remove from favorites", "Favorilerden çıkar") : L("Add to favorites", "Favorilere ekle"))
+            }
+            Text("\(entry.screen) · v\(entry.version) · \(ByteCountFormatter.string(fromByteCount: Int64(entry.size), countStyle: .file))")
+                .font(.caption).foregroundStyle(.secondary)
+            Text(compatibility.label).font(.caption).foregroundStyle(compatibility.blocksInstall ? .red : .secondary)
+            if let last = entry.lastInstall {
+                Text(L("Last install: ", "Son kurulum: ") + last.result)
+                    .font(.caption2).foregroundStyle(last.succeeded ? .green : .orange)
+            }
+            Button(L("Install on the watch", "Saate kur")) { install(entry) }
+                .buttonStyle(.borderless)
+                .disabled(!link.isPaired || link.busy != nil || compatibility.blocksInstall)
+        }
+        .swipeActions {
+            Button(role: .destructive) { library.delete(entry) } label: {
+                Label(L("Delete from iPhone", "iPhone'dan sil"), systemImage: "trash")
+            }
+        }
+    }
+
+    private func install(_ entry: FaceLibrary.Entry) {
+        link.installWatchFace(library.url(for: entry), title: entry.title) { stage in
+            library.recordInstall(entry, result: stage.label, succeeded: stage == .installed || stage == .active)
+        }
+    }
+
+    private func importFaces(_ urls: [URL]) {
+        importStatus = L("Importing…", "İçe aktarılıyor…")
+        Task {
+            var lines: [String] = []
+            for url in urls {
+                do {
+                    switch try await library.importFile(at: url) {
+                    case .added(let e): lines.append(L("Added: \(e.title)", "Eklendi: \(e.title)"))
+                    case .duplicate(let e): lines.append(L("Already in the library: \(e.title)", "Zaten kütüphanede: \(e.title)"))
+                    }
+                } catch {
+                    lines.append(url.lastPathComponent + ": " + error.localizedDescription)
+                }
+            }
+            importStatus = lines.joined(separator: "\n")
         }
     }
 
