@@ -67,6 +67,15 @@ jobs:
           shasum -a 256 HuaSideload-unsigned.ipa | tee HuaSideload-unsigned.ipa.sha256
           /usr/libexec/PlistBuddy -c Print "$APP/Info.plist" | tee info-plist.txt
 
+      - name: Verify .hwt document registration
+        run: |
+          PLIST="build/Release-iphoneos/HuaSideload.app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :UTExportedTypeDeclarations:0:UTTypeIdentifier" "$PLIST" | grep -qx com.huasideload.hwt
+          /usr/libexec/PlistBuddy -c "Print :UTExportedTypeDeclarations:0:UTTypeTagSpecification:public.filename-extension:0" "$PLIST" | grep -qx hwt
+          /usr/libexec/PlistBuddy -c "Print :CFBundleDocumentTypes:0:LSItemContentTypes:0" "$PLIST" | grep -qx com.huasideload.hwt
+          /usr/libexec/PlistBuddy -c "Print :UIFileSharingEnabled" "$PLIST" | grep -qx true
+          echo ".hwt document type, file type and Files sharing are in the built Info.plist"
+
       - uses: actions/upload-artifact@v4
         with:
           name: HuaSideload-unsigned-ipa
