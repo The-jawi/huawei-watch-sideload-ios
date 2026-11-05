@@ -12,8 +12,8 @@ struct ContentView: View {
     @State private var pickingMusic = false
     @State private var pickingWatchFace = false
     @ObservedObject private var library = FaceLibrary.shared
-    @State private var faceSearch = ""
     @State private var importStatus: String?
+    @State private var unknownInstall: FaceLibrary.Entry?
     // Filming mode: only what a video needs (no log controls, no feature sections, no identity buttons).
     // Offered only when a feature asks for it (WatchFeature.offersFilmMode); the plain app never shows it.
     @AppStorage("filmModeV2") private var filmModeOn = false
@@ -89,7 +89,6 @@ struct ContentView: View {
             tab = .install
             importFaces([url])
         }
-        .task { await library.adoptUntrackedFiles() }
         // While filming, identities (UDID, serial number, MAC) always stay masked, in the log too
         .onAppear { if filmMode { link.revealIdentity = false } }
         .onChange(of: filmMode) { _, on in if on { link.revealIdentity = false } }
@@ -341,48 +340,68 @@ struct ContentView: View {
             if let importStatus {
                 Text(importStatus).font(.footnote).foregroundStyle(.secondary)
             }
-            if library.entries.count > 4 {
-                TextField(L("Search", "Ara"), text: $faceSearch)
-            }
-            ForEach(library.visible(search: faceSearch)) { entry in
+            ForEach(library.sorted) { entry in
                 faceRow(entry)
             }
         } header: {
             Text(L("Watch face library (on this iPhone)", "Kadran kütüphanesi (bu iPhone'da)"))
         } footer: {
-            Text(L("Imported faces are copied into the app and kept here; they are also in the Files app under On My iPhone > HuaSideload > Watch Faces. You can also send a .hwt to the app from Files with Share or \"Open in\". Deleting removes only the copy on this iPhone, never anything on the watch.",
-                   "İçe aktarılan kadranlar uygulamaya kopyalanır ve burada kalır; Dosyalar uygulamasında iPhone'umda > HuaSideload > Watch Faces altında da görünür. Dosyalar'dan Paylaş ya da \"Birlikte aç\" ile de .hwt gönderebilirsin. Silmek yalnızca bu iPhone'daki kopyayı siler, saatte hiçbir şeyi silmez."))
+            Text(L("Imported faces are copied into the app and checked: COMPATIBLE, UNKNOWN (kept; you decide), INCOMPATIBLE (not installed) or CORRUPTED (not imported). A package names no device, firmware or API level, so even COMPATIBLE does not guarantee the watch accepts it. You can also send a .hwt from Files with Share or \"Open in\". Deleting removes only the copy on this iPhone, never anything on the watch.",
+                   "İçe aktarılan kadranlar uygulamaya kopyalanır ve denetlenir: UYUMLU, BİLİNMİYOR (saklanır; sen karar verirsin), UYUMSUZ (kurulmaz) ya da BOZUK (içe aktarılmaz). Paket cihaz, yazılım ya da API seviyesi belirtmez; UYUMLU bile saatin kabul edeceğini garanti etmez. Dosyalar'dan Paylaş ya da \"Birlikte aç\" ile de .hwt gönderebilirsin. Silmek yalnızca bu iPhone'daki kopyayı siler, saatte hiçbir şeyi silmez."))
         }
         .fileImporter(isPresented: $pickingWatchFace, allowedContentTypes: [.hwt, .data], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls): importFaces(urls)
+            case .failure(let error as CocoaError) where error.code == .userCancelled: break
             case .failure(let error): importStatus = error.localizedDescription
             }
+        }
+        .confirmationDialog(L("Compatibility unknown", "Uyumluluk bilinmiyor"), isPresented: Binding(get: { unknownInstall != nil }, set: { if !$0 { unknownInstall = nil } }),
+                            titleVisibility: .visible, presenting: unknownInstall) { entry in
+            Button(L("Install anyway", "Yine de kur")) { install(entry) }
+            Button(L("Cancel", "Vazgeç"), role: .cancel) {}
+        } message: { entry in
+            Text(entry.analysis.reasons.joined(separator: "\n"))
         }
     }
 
     private func faceRow(_ entry: FaceLibrary.Entry) -> some View {
-        let compatibility = WatchFaceCompatibility.evaluate(screenCode: entry.screen, device: link.watchFaceParams)
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack {
+        let analysis = entry.analysis
+        let blocked = analysis.status == .incompatible || analysis.status == .corrupted
+        let color: Color = switch analysis.status {
+        case .compatible: .green
+        case .unknown: .orange
+        case .incompatible, .corrupted: .red
+        }
+        return HStack(alignment: .top, spacing: 12) {
+            if entry.hasPreview, let image = UIImage(contentsOfFile: library.previewURL(for: entry).path) {
+                Image(uiImage: image).resizable().scaledToFill().frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 4) {
                 Text(entry.title).font(.body.weight(.semibold))
-                Spacer()
-                Button { library.toggleFavorite(entry) } label: {
-                    Image(systemName: entry.favorite ? "star.fill" : "star")
+                Text("\(ByteCountFormatter.string(fromByteCount: Int64(entry.size), countStyle: .file)) · \(entry.importedAt.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(analysis.status.label).font(.caption.weight(.bold)).foregroundStyle(color)
+                Text(analysis.summary).font(.caption).foregroundStyle(.secondary)
+                if analysis.reasons.count > 1 || !analysis.notes.isEmpty {
+                    DisclosureGroup(L("Analysis", "Analiz")) {
+                        ForEach(analysis.reasons.dropFirst() + analysis.notes, id: \.self) { Text($0).font(.caption2) }
+                    }
+                    .font(.caption)
                 }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(entry.favorite ? L("Remove from favorites", "Favorilerden çıkar") : L("Add to favorites", "Favorilere ekle"))
+                if let last = entry.lastInstall {
+                    Text(L("Last install: ", "Son kurulum: ") + last.result)
+                        .font(.caption2).foregroundStyle(last.succeeded ? .green : .orange)
+                }
+                if !blocked {
+                    Button(L("Install on the watch", "Saate kur")) {
+                        if analysis.status == .unknown { unknownInstall = entry } else { install(entry) }
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(!link.isPaired || link.busy != nil)
+                }
             }
-            Text("\(entry.screen) · v\(entry.version) · \(ByteCountFormatter.string(fromByteCount: Int64(entry.size), countStyle: .file))")
-                .font(.caption).foregroundStyle(.secondary)
-            Text(compatibility.label).font(.caption).foregroundStyle(compatibility.blocksInstall ? .red : .secondary)
-            if let last = entry.lastInstall {
-                Text(L("Last install: ", "Son kurulum: ") + last.result)
-                    .font(.caption2).foregroundStyle(last.succeeded ? .green : .orange)
-            }
-            Button(L("Install on the watch", "Saate kur")) { install(entry) }
-                .buttonStyle(.borderless)
-                .disabled(!link.isPaired || link.busy != nil || compatibility.blocksInstall)
         }
         .swipeActions {
             Button(role: .destructive) { library.delete(entry) } label: {
@@ -391,6 +410,7 @@ struct ContentView: View {
         }
     }
 
+    // The existing install engine (WatchLink) does the transfer, the watch's confirmation and the list check
     private func install(_ entry: FaceLibrary.Entry) {
         link.installWatchFace(library.url(for: entry), title: entry.title) { stage in
             library.recordInstall(entry, result: stage.label, succeeded: stage == .installed || stage == .active)
@@ -404,7 +424,8 @@ struct ContentView: View {
             for url in urls {
                 do {
                     switch try await library.importFile(at: url) {
-                    case .added(let e): lines.append(L("Added: \(e.title)", "Eklendi: \(e.title)"))
+                    case .added(let e): lines.append(L("Imported and analyzed: \(e.title) (\(e.analysis.status.label))",
+                                                       "İçe aktarıldı ve analiz edildi: \(e.title) (\(e.analysis.status.label))"))
                     case .duplicate(let e): lines.append(L("Already in the library: \(e.title)", "Zaten kütüphanede: \(e.title)"))
                     }
                 } catch {
