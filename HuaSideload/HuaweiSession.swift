@@ -73,6 +73,9 @@ final class HuaweiSession {
     // The watch reports progress while installing an uploaded app (percent, 102 installed, 103 failed)
     var onAppInstallStatus: ((Int, String) -> Void)?
 
+    // Pairing progress for the Watch tab (PairingStage); pair() reports up to .authenticated
+    var onPairingStage: ((PairingStage) -> Void)?
+
     // P2P data from apps on the watch (source package, data)
     var onAppMessage: ((String, [UInt8]) -> Void)?
 
@@ -283,6 +286,7 @@ final class HuaweiSession {
     func pair(watch: String) async throws {
         isPaired = false
         sessionKey = nil
+        onPairingStage?(.negotiating)
 
         let linkResponse = try await request(LinkParams.serviceId, LinkParams.commandId,
                                              HuaweiTLV().with(0x01).with(0x02).with(0x03).with(0x04),
@@ -327,18 +331,27 @@ final class HuaweiSession {
             let pin = try PinCode.decrypt(pinTLV, link: link)
             log(.success, L("PIN decrypted (\(pin.count) bytes)", "PIN çözüldü (\(pin.count) bayt)"))
             log(.info, L("⌚ If the watch asks for confirmation, ACCEPT it (60 s)", "⌚ Saatin ekranında onay çıkarsa ONAYLA (60 sn)"))
+            onPairingStage?(.pinProcessed)
 
+            onPairingStage?(.hiChain)
             let token = try await hiChain(operation: 1, key: HCrypto.sha256(Array(pin.hexCompact.utf8)), deviceId: deviceId)
-            store.setAuthToken(token, for: watch)
             authToken = token
-            log(.success, L("Permanent pairing key received and saved", "Kalıcı eşleşme anahtarı alındı ve kaydedildi"))
+            log(.success, L("Permanent pairing key received", "Kalıcı eşleşme anahtarı alındı"))
         } else {
             log(.info, L("3/4 Saved pairing key found, PIN step skipped", "3/4 Kayıtlı eşleşme anahtarı var, PIN adımı atlandı"))
+            onPairingStage?(.hiChain)
         }
 
         sessionKey = try await hiChain(operation: 2, key: authToken!, deviceId: deviceId)
+        // Saved only now: a key from a handshake that did not finish would make every reconnect fail
+        if store.authToken(for: watch) == nil {
+            store.setAuthToken(authToken, for: watch)
+            log(.success, L("Pairing key saved", "Eşleşme anahtarı kaydedildi"))
+        }
         isPaired = true
-        log(.success, L("PAIRED! The connection to the watch is now encrypted.", "EŞLEŞME TAMAM! Artık saatle şifreli konuşuyoruz."))
+        onPairingStage?(.authenticated)
+        log(.success, L("HiChain finished: the connection to the watch is encrypted. Finishing setup…",
+                        "HiChain bitti: saatle bağlantı şifreli. Kurulum tamamlanıyor…"))
     }
 
     // GetHiChainRequest: op 1 returns the permanent key (authToken), op 2 the session key
@@ -469,6 +482,83 @@ final class HuaweiSession {
     func expandCapabilities() async throws -> [UInt8] {
         let response = try await request(0x01, 0x37, HuaweiTLV().with(0x01), label: L("Extended capabilities", "Genişletilmiş yetenekler"))
         return response.tlv?.value(0x01) ?? []
+    }
+
+    // MARK: - Setup after HiChain (PairingSetup)
+
+    struct SetupResult {
+        var sent: [String] = []
+        var skipped: [String] = []
+        var failed: [String] = []
+    }
+
+    // Runs after every successful HiChain, like Gadgetbridge. A step the watch rejects or does not answer is reported
+    // and the others still go out (Gadgetbridge also moves on after a timeout). The account ID is never logged.
+    func completeSetup(watchName: String, accountId: String) async -> SetupResult {
+        var result = SetupResult()
+        func record(_ name: String, _ outcome: Result<HuaweiPacket, Error>) {
+            switch outcome {
+            case .success(let response):
+                if let code = response.resultCode, code != HuaweiPacket.resultSuccess {
+                    result.failed.append(String(format: "%@ (0x%X)", name, code))
+                } else {
+                    result.sent.append(name)
+                }
+            case .failure(let error):
+                result.failed.append("\(name) (\(error))")
+            }
+        }
+        func send(_ name: String, _ service: UInt8, _ command: UInt8, _ tlv: HuaweiTLV) async -> Result<HuaweiPacket, Error> {
+            do {
+                return .success(try await request(service, command, tlv, label: name, timeout: 6))
+            } catch {
+                return .failure(error)
+            }
+        }
+
+        let timeName = L("Set time", "Saati ayarla")
+        record(timeName, await send(timeName, PairingSetup.deviceConfig, PairingSetup.timeCommand,
+                                    PairingSetup.time(Date(), timeZone: .current)))
+
+        var support = PairingSetup.Support()
+        do {
+            support.commands = try await supportedCommands(PairingSetup.commandQuery)
+        } catch {
+            result.failed.append(L("Supported commands", "Desteklenen komutlar") + " (\(error))")
+        }
+        if support.asksExpandCapabilities {
+            support.expandCapabilities = (try? await expandCapabilities()) ?? []
+        }
+        if diagnostics {
+            log(.info, "Diag setup: account \(support.sendsAccount ? "yes" : "no"), agreements \(support.sendsAgreements ? "yes" : "no"), "
+                + "setup status \(support.sendsSetUpStatus ? "yes" : "no"), diff-account pairing \(support.diffAccountPairing ? "yes" : "no"), "
+                + "account ID given \(accountId.isEmpty ? "no" : "yes")")
+        }
+
+        let accountName = L("Huawei account", "Huawei hesabı")
+        if support.sendsAccount {
+            record(accountName, await send(accountName, PairingSetup.accountService, PairingSetup.extendedAccountCommand,
+                                           PairingSetup.extendedAccount(accountId, diffAccountPairing: support.diffAccountPairing)))
+        } else {
+            result.skipped.append(accountName)
+        }
+
+        let agreementsName = L("Agreements", "Sözleşmeler")
+        if support.sendsAgreements {
+            record(agreementsName, await send(agreementsName, PairingSetup.deviceConfig, PairingSetup.acceptAgreementCommand,
+                                              PairingSetup.acceptAgreements(Date())))
+        } else {
+            result.skipped.append(agreementsName)
+        }
+
+        let statusName = L("Setup status", "Kurulum durumu")
+        if support.sendsSetUpStatus {
+            record(statusName, await send(statusName, PairingSetup.deviceConfig, PairingSetup.setUpDeviceStatusCommand,
+                                          PairingSetup.setUpDeviceStatus(watchName: watchName)))
+        } else {
+            result.skipped.append(statusName)
+        }
+        return result
     }
 
     func musicStorage() async throws -> MusicControl.Storage {
