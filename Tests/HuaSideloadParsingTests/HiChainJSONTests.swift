@@ -71,7 +71,9 @@ final class HiChainJSONTests: XCTestCase {
     }
 
     func testLooseSyntax() throws {
-        let e = try decode(bytes(#"{"payload":{"isoSalt":"00",},"message":1,}"#))
+        // Unquoted keys and single quotes: org.json takes them, strict JSON does not (trailing commas are not a
+        // good probe, newer Foundation accepts them in strict mode)
+        let e = try decode(bytes(#"{payload:{isoSalt:'00'},message:1}"#))
         XCTAssertEqual(e.payload["isoSalt"] as? String, "00")
         XCTAssertTrue(e.report.lenientSyntax)
     }
