@@ -401,7 +401,9 @@ final class HuaweiSession {
     private func hiChainStep(_ tlv: HuaweiTLV, label: String, timeout: Double = 10) async throws -> HiChainMessage.Response {
         let response = try await request(0x01, HiChainMessage.commandId, tlv, label: label, encrypted: false, sliced: true, timeout: timeout)
         guard let responseTLV = response.tlv else { throw HuaweiAuthError.unexpected("\(label): no TLV") }
-        return try HiChainMessage.parseResponse(responseTLV)
+        return try HiChainMessage.parseResponse(responseTLV) { summary, adjusted in
+            if adjusted || diagnostics { log(.info, "HiChain reply (\(label)): \(summary)") }
+        }
     }
 
     // MARK: - Commands after pairing
