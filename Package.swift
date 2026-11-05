@@ -11,7 +11,7 @@ let package = Package(
             name: "HuaSideloadParsing",
             path: "HuaSideload",
             exclude: ["Assets.xcassets"],
-            sources: ["HiChainJSON.swift"]
+            sources: ["HiChainJSON.swift", "HuaweiProtocol.swift", "Localization.swift", "PairingSetup.swift"]
         ),
         .testTarget(
             name: "HuaSideloadParsingTests",
