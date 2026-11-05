@@ -301,8 +301,9 @@ struct HiChainMessage {
         case finished
     }
 
-    // DeviceConfig.HiChain.Response.parseTlv (Huawei framing: 0x04 = type, 0x01 = JSON)
-    static func parseResponse(_ tlv: HuaweiTLV) throws -> Response {
+    // DeviceConfig.HiChain.Response.parseTlv (Huawei framing: 0x04 = type, 0x01 = JSON). `report` gets the
+    // decoder's summary (sizes and key names only) and whether the reply needed cleaning up (HiChainJSON).
+    static func parseResponse(_ tlv: HuaweiTLV, report: (_ summary: String, _ adjusted: Bool) -> Void = { _, _ in }) throws -> Response {
         if let code = tlv.int(0x7F), code != HuaweiPacket.resultSuccess {
             throw HuaweiAuthError.watchError(String(format: "HiChain result 0x%X", code))
         }
@@ -311,11 +312,17 @@ struct HiChainMessage {
         }
         guard type == 0x00 else { return .finished }
 
-        guard let raw = tlv.value(0x01),
-              let value = try? JSONSerialization.jsonObject(with: Data(raw)) as? [String: Any],
-              let payload = value["payload"] as? [String: Any] else {
-            throw HuaweiAuthError.unexpected("HiChain JSON could not be decoded")
+        guard let raw = tlv.value(0x01) else {
+            throw HuaweiAuthError.unexpected("HiChain reply has no JSON (0x01)")
         }
+        let envelope: HiChainJSON.Envelope
+        do {
+            envelope = try HiChainJSON.decodeEnvelope(raw)
+        } catch {
+            throw HuaweiAuthError.unexpected("HiChain JSON could not be decoded: \(error)")
+        }
+        report(envelope.report.summary, envelope.report.adjusted)
+        let payload = envelope.payload
         if let code = payload["errorCode"] as? Int, code != 0 {
             throw HuaweiAuthError.watchError("HiChain errorCode \(code)")
         }
