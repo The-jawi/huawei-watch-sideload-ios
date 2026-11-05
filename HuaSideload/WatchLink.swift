@@ -27,7 +27,9 @@ final class WatchLink: NSObject, ObservableObject {
     @Published private(set) var isConnecting = false
     @Published private(set) var connectedName: String?
     @Published private(set) var huaweiChannelReady = false
+    // isPaired: the connection is encrypted, so commands work. pairingStage says whether pairing is really finished.
     @Published private(set) var isPaired = false
+    @Published private(set) var pairingStage: PairingStage = .none
     @Published private(set) var busy: String?
     @Published private(set) var battery: Int?
     @Published private(set) var watchInfo: [String] = []
@@ -63,6 +65,13 @@ final class WatchLink: NSObject, ObservableObject {
     private var wantsConnection = false
     private static let lastWatchKey = "lastWatch"
 
+    // Optional: the Huawei account ID the watch was set up with (Watch tab). Sent in the setup after HiChain;
+    // without it the watch is told "no account", as Gadgetbridge does.
+    nonisolated static let huaweiAccountKey = "HuaSideloadHuaweiAccountId"
+    static var huaweiAccountId: String {
+        PairingSetup.normalizedAccountId(UserDefaults.standard.string(forKey: huaweiAccountKey) ?? "") ?? ""
+    }
+
     override init() {
         features = WatchFeatures.load()
         super.init()
@@ -88,6 +97,7 @@ final class WatchLink: NSObject, ObservableObject {
                               MusicControl.uploadInfoReply(index: index, title: meta.title, artist: meta.artist))
             self.append(.info, L("The watch asked for song info: \(fileName) → \(meta.title)", "Saat şarkı bilgisini sordu: \(fileName) → \(meta.title)"))
         }
+        session.onPairingStage = { [weak self] stage in self?.pairingStage = stage }
         session.onAppInstallStatus = { [weak self] status, package in
             let kind: LogKind = status == 102 ? .success : (status == 103 || status == 106 ? .error : .info)
             self?.append(kind, "⌚ Saat: \(WatchApps.describeStatus(status)) \(package)")
@@ -274,6 +284,7 @@ final class WatchLink: NSObject, ObservableObject {
         writeCharacteristic = nil
         huaweiChannelReady = false
         isPaired = false
+        pairingStage = .none
         connectedName = nil
         battery = nil
         watchInfo = []
@@ -287,8 +298,28 @@ final class WatchLink: NSObject, ObservableObject {
     func pair() {
         guard let watchKey else { return }
         run(L("Pairing…", "Eşleşiyor…")) { session in
-            try await session.pair(watch: watchKey)
+            do {
+                try await session.pair(watch: watchKey)
+            } catch {
+                self.pairingStage = .failed(String(String(describing: error).prefix(120)))
+                throw error
+            }
             self.isPaired = true
+
+            // Before anything else, like Gadgetbridge: the watch waits for these after HiChain (PairingSetup)
+            self.pairingStage = .finishingSetup
+            let setup = await session.completeSetup(watchName: self.connectedName ?? "", accountId: Self.huaweiAccountId)
+            if !setup.sent.isEmpty { self.append(.success, L("Setup sent: ", "Kurulum gönderildi: ") + setup.sent.joined(separator: ", ")) }
+            if !setup.skipped.isEmpty { self.append(.info, L("Not asked for by the watch: ", "Saatin istemediği: ") + setup.skipped.joined(separator: ", ")) }
+            if setup.failed.isEmpty {
+                self.pairingStage = .paired
+                self.append(.success, L("PAIRED: HiChain finished and the watch accepted the setup. Check that the watch shows no error.",
+                                        "EŞLEŞTİ: HiChain bitti ve saat kurulumu kabul etti. Saatte hata çıkmadığını kontrol et."))
+            } else {
+                let why = setup.failed.joined(separator: ", ")
+                self.pairingStage = .setupIncomplete(why)
+                self.append(.error, L("Setup not accepted by the watch: ", "Saat kurulumu kabul etmedi: ") + why)
+            }
             self.watchUDID = session.watchUDID
             if let udid = session.watchUDID { self.addSecret(udid) }
             let environment = ProcessInfo.processInfo.environment
@@ -379,6 +410,7 @@ final class WatchLink: NSObject, ObservableObject {
         guard let watchKey else { return }
         session.forget(watch: watchKey)
         isPaired = false
+        pairingStage = huaweiChannelReady ? .channelReady : .none
         append(.info, L("Saved pairing removed. The next pairing starts from the PIN step.", "Kayıtlı eşleşme silindi. Tekrar eşleşince PIN adımından başlanacak."))
         objectWillChange.send()
     }
@@ -822,7 +854,9 @@ extension WatchLink: @preconcurrency CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         isConnecting = false
+        let wasPairing = ![PairingStage.none, .channelReady].contains(pairingStage)
         resetConnectionState()
+        if wasPairing { pairingStage = .connectionLost }
         if let error {
             append(.error, L("Connection lost: ", "Bağlantı koptu: ") + error.localizedDescription)
         } else {
@@ -883,6 +917,7 @@ extension WatchLink: @preconcurrency CBPeripheralDelegate {
         }
         huaweiChannelReady = characteristic.isNotifying && writeCharacteristic != nil
         if huaweiChannelReady {
+            pairingStage = .channelReady
             append(.success, L("Huawei channel ready. BLE write limit: \(maxWriteLength) bytes", "Huawei kanalı hazır. BLE yazma sınırı: \(maxWriteLength) bayt"))
             if hasSavedPairing {
                 append(.info, L("Saved pairing found, pairing automatically…", "Kayıtlı eşleşme var, otomatik eşleşiliyor…"))
