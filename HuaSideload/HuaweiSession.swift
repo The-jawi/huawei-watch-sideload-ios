@@ -122,6 +122,7 @@ final class HuaweiSession {
     // Decrypts if needed and hands the packet to the waiting request. Returns the (decrypted) packet for logging.
     func receive(_ packet: HuaweiPacket) -> HuaweiPacket {
         var packet = packet
+        logDiagnostics(packet)
         if packet.isEncrypted {
             if let tlv = packet.tlv, let key = sessionKey, let link,
                let iv = tlv.value(0x7D), let cipher = tlv.value(0x7E) {
@@ -201,6 +202,27 @@ final class HuaweiSession {
                           packet.serviceId, packet.commandId) + " [\(tags)]")
     }
 
+    // Pairing diagnostics, off by default (Log tab toggle, UserDefaults key "HuaSideloadPairingDiagnostics"): header,
+    // TLV tags with lengths only, and the session state. Never logs values, so no keys, IVs, PIN, UDID or MAC.
+    nonisolated static let diagnosticsKey = "HuaSideloadPairingDiagnostics"
+    private var diagnostics: Bool { UserDefaults.standard.bool(forKey: Self.diagnosticsKey) }
+
+    private func logDiagnostics(_ packet: HuaweiPacket) {
+        guard diagnostics else { return }
+        let tags = packet.tlv?.items.map { String(format: "%02X:%d", $0.tag, $0.value.count) }.joined(separator: " ") ?? "not TLV"
+        let waiting = waiters.map { String(format: "0x%02X/0x%02X", $0.serviceId, $0.commandId) }.joined(separator: ", ")
+        var line = String(format: "Diag in: service 0x%02X, command 0x%02X", packet.serviceId, packet.commandId)
+        line += ", body \(packet.body.count) B, tags [\(tags)], encrypted \(packet.isEncrypted ? "yes" : "no")"
+        line += ", session key \(sessionKey == nil ? "no" : "yes"), paired \(isPaired ? "yes" : "no")"
+        line += ", waiting for [\(waiting.isEmpty ? "-" : waiting)], last request: \(lastRequest)"
+        if packet.isEncrypted && sessionKey == nil {
+            line += " -> not decrypted: no session key on this connection yet"
+        }
+        log(.info, line)
+    }
+
+    private var lastRequest = "-"
+
     // MARK: - Sending
 
     // Fire and forget (acknowledgements and updates)
@@ -215,6 +237,7 @@ final class HuaweiSession {
     func request(_ serviceId: UInt8, _ commandId: UInt8, _ tlv: HuaweiTLV, label: String,
                  encrypted: Bool = true, sliced: Bool = false, timeout: Double = 10, quiet: Bool = false) async throws -> HuaweiPacket {
         let frames = try frames(serviceId, commandId, tlv, encrypted: encrypted, sliced: sliced)
+        lastRequest = String(format: "0x%02X/0x%02X ", serviceId, commandId) + label
         if !quiet {
             let size = frames.reduce(0) { $0 + $1.count }
             let encryptedNote = encrypted ? L(" (encrypted)", " (şifreli)") : ""
@@ -268,6 +291,10 @@ final class HuaweiSession {
         let link = LinkInfo(linkTLV)
         self.link = link
         log(.info, "Auth \(link.authVersion), support type \(link.deviceSupportType), \(link.usesGCM ? "AES-GCM" : "AES-CBC")")
+        if diagnostics {
+            log(.info, "Diag link: protocol \(link.protocolVersion), slice \(link.sliceSize), mtu \(link.mtu), auth version \(link.authVersion), "
+                + "support type \(link.deviceSupportType), auth algo \(link.authAlgo), bond state \(link.bondState), encrypt method \(link.encryptMethod)")
+        }
 
         guard [1, 2, 3, 4].contains(link.deviceSupportType) else {
             throw HuaweiSessionError.unsupported(L("pairing without HiChain (support type \(link.deviceSupportType))",
