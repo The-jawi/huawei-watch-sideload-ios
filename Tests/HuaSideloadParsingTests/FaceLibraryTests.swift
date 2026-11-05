@@ -177,8 +177,9 @@ final class FaceLibraryTests: XCTestCase {
         XCTAssertEqual(FaceLibrary.sanitized(String(repeating: "x", count: 200)).count, 80)
     }
 
+    // Its conformance comes from the app's Info.plist (UTExportedTypeDeclarations), which the test process does not
+    // load; the CI step "Verify .hwt document registration" checks it in the built app
     func testType() {
         XCTAssertEqual(UTType.hwt.identifier, "com.huasideload.hwt")
-        XCTAssertTrue(UTType.hwt.conforms(to: .data))
     }
 }
