@@ -14,6 +14,7 @@ struct ContentView: View {
     // Filming mode: only what a video needs (no log controls, no feature sections, no identity buttons).
     // Offered only when a feature asks for it (WatchFeature.offersFilmMode); the plain app never shows it.
     @AppStorage("filmModeV2") private var filmModeOn = false
+    @AppStorage(HuaweiSession.diagnosticsKey) private var pairingDiagnostics = false
     private var filmModeOffered: Bool { link.features.contains { $0.offersFilmMode } }
     private var filmMode: Bool { filmModeOffered && filmModeOn }
 
@@ -339,6 +340,7 @@ struct ContentView: View {
 
     private var logSection: some View {
         Section {
+            Toggle(L("Pairing diagnostics (no keys)", "Eşleşme tanılaması (anahtarsız)"), isOn: $pairingDiagnostics)
             ForEach(link.log.reversed()) { LogRow(entry: $0, text: link.display($0.text)) }
         } header: {
             HStack {
