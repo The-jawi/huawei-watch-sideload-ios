@@ -15,7 +15,9 @@ struct ContentView: View {
     // Offered only when a feature asks for it (WatchFeature.offersFilmMode); the plain app never shows it.
     @AppStorage("filmModeV2") private var filmModeOn = false
     @AppStorage(HuaweiSession.diagnosticsKey) private var pairingDiagnostics = false
-    @AppStorage(WatchLink.huaweiAccountKey) private var huaweiAccountId = ""
+    // Kept in the Keychain (CredentialStore), not in UserDefaults
+    @State private var huaweiAccountId = CredentialStore.shared.string(CredentialStore.huaweiAccountKey) ?? ""
+    @State private var confirmingFirstPairing = false
     private var filmModeOffered: Bool { link.features.contains { $0.offersFilmMode } }
     private var filmMode: Bool { filmModeOffered && filmModeOn }
 
@@ -192,23 +194,46 @@ struct ContentView: View {
             if let busy = link.busy {
                 HStack { ProgressView(); Text(busy).foregroundStyle(.secondary) }
             }
+            if link.sharedWithOtherApp {
+                Label(L("Huawei Health (or another app) is connected to this watch too. Force-quit it before pairing or installing.",
+                        "Huawei Health (ya da başka bir uygulama) da bu saate bağlı. Eşleşmeden veya yüklemeden önce onu tamamen kapat."),
+                      systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
             if !link.isPaired {
-                Button(link.hasSavedPairing ? L("Pair (saved key)", "Eşleş (kayıtlı anahtarla)") : L("Pair", "Eşleş")) { link.pair() }
-                    .disabled(!link.huaweiChannelReady || link.busy != nil)
-                    .fontWeight(.semibold)
+                // A first pairing (PIN + HiChain) creates this app's own pairing on the watch; a saved key only reconnects
+                Button(link.hasSavedPairing ? L("Pair (saved key)", "Eşleş (kayıtlı anahtarla)") : L("Pair", "Eşleş")) {
+                    if link.hasSavedPairing { link.pair() } else { confirmingFirstPairing = true }
+                }
+                .disabled(!link.huaweiChannelReady || link.busy != nil)
+                .fontWeight(.semibold)
+                .confirmationDialog(L("First pairing with this watch", "Bu saatle ilk eşleşme"), isPresented: $confirmingFirstPairing, titleVisibility: .visible) {
+                    Button(L("Pair now", "Şimdi eşleş")) { link.pair() }
+                    Button(L("Cancel", "Vazgeç"), role: .cancel) {}
+                } message: {
+                    Text(L("This creates HuaSideload's own pairing on the watch (you confirm it on the watch). Gadgetbridge reports that the watch keeps working with Huawei Health when the phone sends the same Huawei account ID; this is not verified on a Watch Fit 4 Pro with HarmonyOS 6.1. If you want to keep using Huawei Health, enter your account ID first.",
+                           "Bu, saatte HuaSideload'un kendi eşleşmesini oluşturur (saatte onaylarsın). Gadgetbridge'e göre telefon aynı Huawei hesap ID'sini gönderirse saat Huawei Health ile çalışmaya devam eder; bu Watch Fit 4 Pro / HarmonyOS 6.1'de doğrulanmadı. Huawei Health'i kullanmaya devam etmek istiyorsan önce hesap ID'sini gir."))
+                }
                 if !filmMode {
                     SecureField(L("Huawei account ID (optional, 17 digits)", "Huawei hesap ID'si (isteğe bağlı, 17 hane)"), text: $huaweiAccountId)
                         .keyboardType(.numberPad)
+                        .onChange(of: huaweiAccountId) { _, value in
+                            CredentialStore.shared.set(value.trimmingCharacters(in: .whitespacesAndNewlines), for: CredentialStore.huaweiAccountKey)
+                        }
                 }
             } else if !filmMode {
                 Button(L("Refresh battery and watch info", "Pil ve saat bilgisini yenile")) { link.refresh() }
                     .disabled(link.busy != nil)
             }
-            Button(L("Disconnect", "Bağlantıyı kes"), role: .destructive) { link.disconnect() }
+            Button(L("Disconnect (release for Huawei Health)", "Bağlantıyı kes (Huawei Health'e bırak)"), role: .destructive) { link.disconnect() }
         } header: {
             Text(L("Watch", "Saat"))
         } footer: {
-            if !link.isPaired && !link.hasSavedPairing && !filmMode {
+            if link.isPaired && !filmMode {
+                Text(L("To go back to Huawei Health: tap Disconnect, then open Huawei Health. Disconnecting keeps the watch's data, its Huawei Health pairing and HuaSideload's saved key; it is not Forget pairing and not a reset.",
+                       "Huawei Health'e dönmek için: Bağlantıyı kes'e dokun, sonra Huawei Health'i aç. Bağlantıyı kesmek saatin verilerini, Huawei Health eşleşmesini ve HuaSideload'un kayıtlı anahtarını korur; eşleşmeyi unutmak ya da sıfırlamak değildir."))
+            } else if !link.isPaired && !link.hasSavedPairing && !filmMode {
                 Text(L("Close Huawei Health before pairing (swipe it up in the app switcher). The watch may ask for confirmation the first time. A watch set up with Huawei Health may still be tied to that Huawei account: if it reports \"Pairing failed\", enter the account ID (the userId cookie on cloud.huawei.com, see Gadgetbridge's Huawei pairing guide) and pair again.",
                        "Eşleşmeden önce Huawei Health'i kapat (uygulama değiştiriciden yukarı kaydır). İlk eşleşmede saatin ekranında onay çıkabilir. Huawei Health ile kurulan saat o Huawei hesabına bağlı kalabilir: saat \"Eşleşme başarısız\" derse hesap ID'sini gir (cloud.huawei.com'daki userId çerezi, Gadgetbridge'in Huawei eşleşme rehberine bak) ve tekrar eşleş."))
             }
@@ -273,11 +298,20 @@ struct ContentView: View {
                     Text(status).font(.callout)
                 }
             }
+            if let compatibility = link.watchFaceCompatibility, link.watchFaceStage != .idle {
+                Text(compatibility.label).font(.footnote).foregroundStyle(compatibility.blocksInstall ? .red : .secondary)
+            }
             ForEach(WatchFaceCatalog.all, id: \.self) { url in
                 let name = url.deletingPathExtension().lastPathComponent
-                Button(L("Install the \(name) watch face", "\(name) kadranını saate kur")) { link.installWatchFace(url, title: name) }
-                    .disabled(link.busy != nil)
-                    .fontWeight(.semibold)
+                let compatibility = WatchFaceCompatibility.evaluate(screenCode: WatchFaceCatalog.screens[url] ?? "?", device: link.watchFaceParams)
+                VStack(alignment: .leading, spacing: 2) {
+                    Button(L("Install the \(name) watch face", "\(name) kadranını saate kur")) { link.installWatchFace(url, title: name) }
+                        .disabled(link.busy != nil || compatibility.blocksInstall)
+                        .fontWeight(.semibold)
+                    if link.watchFaceParams != nil {
+                        Text(compatibility.label).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
             if !filmMode {
                 Button(L("Install a watch face (.hwt)", "Saate kadran yükle (.hwt)")) { pickingWatchFace = true }
@@ -288,8 +322,8 @@ struct ContentView: View {
             Text(L("Watch faces", "Kadranlar"))
         } footer: {
             if !filmMode {
-                Text(L("Watch faces made with Huawei Theme Studio (.hwt). After the upload, touch and hold the watch face on the watch and pick the new one.",
-                       "Huawei Theme Studio ile yapılan kadranlar (.hwt). Yükleme bitince saatte kadrana basılı tut ve yenisini seç."))
+                Text(L("Watch faces made with Huawei Theme Studio (.hwt) for this watch's screen. The app checks the package's screen against the watch first, then shows each stage: transferred, confirmed by the watch, installed (in the watch's list), active. The two bundled faces are made for 466×466 round screens.",
+                       "Bu saatin ekranı için Huawei Theme Studio ile yapılan kadranlar (.hwt). Uygulama önce paketin ekranını saatle karşılaştırır, sonra her aşamayı gösterir: aktarıldı, saat onayladı, kuruldu (saatin listesinde), etkin. Gelen iki kadran 466×466 yuvarlak ekranlar içindir."))
             }
         }
         .fileImporter(isPresented: $pickingWatchFace, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
