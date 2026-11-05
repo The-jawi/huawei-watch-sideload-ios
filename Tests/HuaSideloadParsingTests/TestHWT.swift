@@ -34,15 +34,24 @@ enum TestHWT {
 
     static func png(_ width: Int, _ height: Int) -> [UInt8] {
         func be32(_ v: Int) -> [UInt8] { [UInt8(v >> 24 & 0xFF), UInt8(v >> 16 & 0xFF), UInt8(v >> 8 & 0xFF), UInt8(v & 0xFF)] }
-        return [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] + be32(13) + Array("IHDR".utf8) + be32(width) + be32(height)
-            + [8, 6, 0, 0, 0] + [0, 0, 0, 0]
+        var bytes: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        bytes += be32(13)
+        bytes += Array("IHDR".utf8)
+        bytes += be32(width)
+        bytes += be32(height)
+        bytes += [8, 6, 0, 0, 0, 0, 0, 0, 0]
+        return bytes
     }
 
     // JPEG start with an SOF0 marker giving its size
     static func jpeg(_ width: Int, _ height: Int) -> [UInt8] {
-        [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00,
-         0xFF, 0xC0, 0x00, 0x0B, 0x08, UInt8(height >> 8), UInt8(height & 0xFF), UInt8(width >> 8), UInt8(width & 0xFF), 0x01, 0x01, 0x11, 0x00,
-         0xFF, 0xD9]
+        let h: [UInt8] = [UInt8(height >> 8), UInt8(height & 0xFF)]
+        let w: [UInt8] = [UInt8(width >> 8), UInt8(width & 0xFF)]
+        var bytes: [UInt8] = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x0B, 0x08]
+        bytes += h
+        bytes += w
+        bytes += [0x01, 0x01, 0x11, 0x00, 0xFF, 0xD9]
+        return bytes
     }
 
     struct Options {
