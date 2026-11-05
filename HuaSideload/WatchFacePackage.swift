@@ -86,7 +86,7 @@ enum WatchFaceCatalog {
 // Minimal zip reader: central directory, stored (0) and deflate (8) entries; no zip64.
 struct ZipArchive {
     private let bytes: [UInt8]
-    private var entries: [String: (method: Int, compressed: Int, size: Int, offset: Int)] = [:]
+    private var entries: [String: (method: Int, compressed: Int, size: Int, offset: Int, crc: UInt32)] = [:]
 
     init(_ bytes: [UInt8]) throws {
         self.bytes = bytes
@@ -104,6 +104,7 @@ struct ZipArchive {
         for _ in 0..<count {
             guard p + 46 <= bytes.count, Self.u32(bytes, p) == 0x0201_4B50 else { throw WatchFacePackage.PackageError.notZip }
             let method = Self.u16(bytes, p + 10)
+            let crc = UInt32(Self.u32(bytes, p + 16))
             let compressed = Self.u32(bytes, p + 20)
             let size = Self.u32(bytes, p + 24)
             let nameLength = Self.u16(bytes, p + 28)
@@ -112,12 +113,17 @@ struct ZipArchive {
             let local = Self.u32(bytes, p + 42)
             guard p + 46 + nameLength <= bytes.count else { throw WatchFacePackage.PackageError.notZip }
             let name = String(decoding: bytes[(p + 46)..<(p + 46 + nameLength)], as: UTF8.self)
-            entries[name] = (method, compressed, size, local)
+            entries[name] = (method, compressed, size, local, crc)
             p += 46 + nameLength + extraLength + commentLength
         }
     }
 
     var names: [String] { entries.keys.sorted() }
+
+    // The stored CRC-32 of an entry and its compression method (HWTAnalyzer checks every entry against it)
+    func info(_ name: String) -> (method: Int, crc: UInt32, size: Int)? {
+        entries[name].map { ($0.method, $0.crc, $0.size) }
+    }
 
     func file(_ name: String) -> [UInt8]? {
         guard let entry = entries[name], entry.offset + 30 <= bytes.count, Self.u32(bytes, entry.offset) == 0x0403_4B50 else {
