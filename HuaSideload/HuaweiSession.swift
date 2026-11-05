@@ -28,12 +28,13 @@ struct WatchStore {
         return Array(id.utf8)
     }
 
+    // Pairing keys are in the Keychain (CredentialStore), moved there from UserDefaults by older builds on first read
     func authToken(for watch: String) -> [UInt8]? {
-        defaults.string(forKey: "authToken." + watch).flatMap { [UInt8](hex: $0) }
+        CredentialStore.shared.string(CredentialStore.authTokenKey(watch)).flatMap { [UInt8](hex: $0) }
     }
 
     func setAuthToken(_ token: [UInt8]?, for watch: String) {
-        defaults.set(token?.hexCompact, forKey: "authToken." + watch)
+        CredentialStore.shared.set(token?.hexCompact, for: CredentialStore.authTokenKey(watch))
     }
 }
 
@@ -75,6 +76,9 @@ final class HuaweiSession {
 
     // Pairing progress for the Watch tab (PairingStage); pair() reports up to .authenticated
     var onPairingStage: ((PairingStage) -> Void)?
+
+    // The watch confirmed an uploaded watch face (0x27/0x05); the session has already answered it
+    var onWatchFaceConfirm: ((WatchFaceService.ConfirmReport) -> Void)?
 
     // P2P data from apps on the watch (source package, data)
     var onAppMessage: ((String, [UInt8]) -> Void)?
@@ -168,6 +172,15 @@ final class HuaweiSession {
             let status = tlv.int(0x01) ?? -1
             let package = tlv.value(0x02).map { String(decoding: $0, as: UTF8.self) } ?? ""
             onAppInstallStatus?(status, package)
+            return
+        }
+        // The watch stored an uploaded watch face and asks for confirmation (AsynchronousResponse.handleWatchface)
+        if isPaired, packet.serviceId == WatchFaceService.serviceId, packet.commandId == WatchFaceService.confirmCommand,
+           let tlv = packet.tlv, let report = WatchFaceService.parseConfirm(tlv) {
+            send(WatchFaceService.serviceId, WatchFaceService.confirmCommand, WatchFaceService.confirmReply(fileName: report.fileName))
+            log(.info, L("The watch confirmed watch face \(report.fileName) (report type \(report.reportType)); confirmation sent",
+                         "Saat \(report.fileName) kadranını onayladı (bildirim türü \(report.reportType)); onay gönderildi"))
+            onWatchFaceConfirm?(report)
             return
         }
         guard isPaired, packet.serviceId == MusicControl.serviceId, let tlv = packet.tlv else {
@@ -482,6 +495,28 @@ final class HuaweiSession {
     func expandCapabilities() async throws -> [UInt8] {
         let response = try await request(0x01, 0x37, HuaweiTLV().with(0x01), label: L("Extended capabilities", "Genişletilmiş yetenekler"))
         return response.tlv?.value(0x01) ?? []
+    }
+
+    // MARK: - Watch faces (WatchFaceService, service 0x27)
+
+    func watchFaceParams() async throws -> WatchFaceService.DeviceParams? {
+        let response = try await request(WatchFaceService.serviceId, WatchFaceService.paramsCommand, WatchFaceService.paramsRequest(),
+                                         label: L("Watch face parameters", "Kadran parametreleri"), timeout: 6)
+        return response.tlv.flatMap(WatchFaceService.parseParams)
+    }
+
+    func installedWatchFaces() async throws -> [WatchFaceService.Installed] {
+        let response = try await request(WatchFaceService.serviceId, WatchFaceService.listCommand, WatchFaceService.listRequest(),
+                                         label: L("Watch faces on the watch", "Saatteki kadranlar"), timeout: 8)
+        return response.tlv.map(WatchFaceService.parseList) ?? []
+    }
+
+    // Returns the watch's result code, nil when it sent none
+    func activateWatchFace(fileName: String) async throws -> Int? {
+        let response = try await request(WatchFaceService.serviceId, WatchFaceService.operationCommand,
+                                         WatchFaceService.operation(fileName: fileName, WatchFaceService.activate),
+                                         label: L("Make the watch face active", "Kadranı etkinleştir"), timeout: 8)
+        return response.resultCode
     }
 
     // MARK: - Setup after HiChain (PairingSetup)
