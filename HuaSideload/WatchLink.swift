@@ -647,12 +647,14 @@ final class WatchLink: NSObject, ObservableObject {
 
     // Uploads a watch face package (.hwt from Huawei Theme Studio), then follows it until the watch lists it
     // (WatchFaceService). Stages: checked → transferred → confirmed by the watch → installed (listed) → active.
-    func installWatchFace(_ url: URL, title displayTitle: String? = nil) {
+    // onFinish gets the last stage reached (FaceLibrary keeps it as the install history)
+    func installWatchFace(_ url: URL, title displayTitle: String? = nil, onFinish: ((WatchFaceInstallStage) -> Void)? = nil) {
         guard busy == nil else { return }
         watchAppProgress = nil
         setFaceStage(.validating)
         run(L("Installing the watch face…", "Kadran saate yükleniyor…")) { session in
             defer { self.watchAppProgress = nil }
+            defer { onFinish?(self.watchFaceStage) }
             do {
                 let accessing = url.startAccessingSecurityScopedResource()
                 defer { if accessing { url.stopAccessingSecurityScopedResource() } }
