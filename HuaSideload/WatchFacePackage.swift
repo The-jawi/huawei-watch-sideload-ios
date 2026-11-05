@@ -9,6 +9,24 @@ struct WatchFacePackage {
     let screen: String
     let version: String
     let bin: [UInt8]
+    // What the archive holds, for the pre-install check (sizes and names only)
+    let root: String            // HwTheme (Huawei) or HnTheme (Honor)
+    let files: [String]
+    let binWasZipped: Bool      // com.huawei.watchface was a zip holding watchface.bin (newer packages)
+    let hasPreview: Bool
+
+    // Problems that do not stop the upload but are worth showing
+    var warnings: [String] {
+        var list: [String] = []
+        if root != "HwTheme" && root != "HnTheme" {
+            list.append(L("description.xml has no HwTheme/HnTheme root", "description.xml'de HwTheme/HnTheme kökü yok"))
+        }
+        if screen == "?" { list.append(L("no <screen> in description.xml", "description.xml'de <screen> yok")) }
+        if version == "?" { list.append(L("no <version> in description.xml", "description.xml'de <version> yok")) }
+        if !hasPreview { list.append(L("no preview/cover.jpg", "preview/cover.jpg yok")) }
+        if bin.isEmpty { list.append(L("watchface.bin is empty", "watchface.bin boş")) }
+        return list
+    }
 
     enum PackageError: LocalizedError {
         case notZip
@@ -30,13 +48,18 @@ struct WatchFacePackage {
         title = Self.tag("title", in: text) ?? "?"
         screen = Self.tag("screen", in: text) ?? "?"
         version = Self.tag("version", in: text) ?? "?"
+        root = text.contains("<HnTheme") ? "HnTheme" : (text.contains("<HwTheme") ? "HwTheme" : "?")
+        files = outer.names
+        hasPreview = outer.names.contains("preview/cover.jpg")
         guard let inner = outer.file("com.huawei.watchface") ?? outer.file("com.honor.watchface") else {
             throw PackageError.missing("com.huawei.watchface")
         }
         if let innerZip = try? ZipArchive(inner), let bin = innerZip.file("watchface.bin") {
             self.bin = bin
+            binWasZipped = true
         } else {
             self.bin = inner
+            binWasZipped = false
         }
     }
 
@@ -53,6 +76,11 @@ struct WatchFacePackage {
 enum WatchFaceCatalog {
     static let all: [URL] = (Bundle.main.urls(forResourcesWithExtension: "hwt", subdirectory: nil) ?? [])
         .sorted { $0.lastPathComponent.localizedCompare($1.lastPathComponent) == .orderedAscending }
+
+    // Screen code of each bundled face (description.xml), read once
+    static let screens: [URL: String] = Dictionary(uniqueKeysWithValues: all.compactMap { url in
+        (try? Data(contentsOf: url)).flatMap { try? WatchFacePackage(hwt: $0) }.map { (url, $0.screen) }
+    })
 }
 
 // Minimal zip reader: central directory, stored (0) and deflate (8) entries; no zip64.
@@ -88,6 +116,8 @@ struct ZipArchive {
             p += 46 + nameLength + extraLength + commentLength
         }
     }
+
+    var names: [String] { entries.keys.sorted() }
 
     func file(_ name: String) -> [UInt8]? {
         guard let entry = entries[name], entry.offset + 30 <= bytes.count, Self.u32(bytes, entry.offset) == 0x0403_4B50 else {
