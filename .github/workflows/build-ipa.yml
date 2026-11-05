@@ -32,6 +32,11 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Run parsing tests
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee test.log
+
       - name: Generate Xcode project
         env:
           HUASIDELOAD_BUNDLE_ID: ${{ inputs.bundle_id }}
@@ -74,4 +79,6 @@ jobs:
         if: always()
         with:
           name: build-log
-          path: build.log
+          path: |
+            build.log
+            test.log
