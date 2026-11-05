@@ -15,6 +15,7 @@ struct ContentView: View {
     // Offered only when a feature asks for it (WatchFeature.offersFilmMode); the plain app never shows it.
     @AppStorage("filmModeV2") private var filmModeOn = false
     @AppStorage(HuaweiSession.diagnosticsKey) private var pairingDiagnostics = false
+    @AppStorage(WatchLink.huaweiAccountKey) private var huaweiAccountId = ""
     private var filmModeOffered: Bool { link.features.contains { $0.offersFilmMode } }
     private var filmMode: Bool { filmModeOffered && filmModeOn }
 
@@ -132,8 +133,7 @@ struct ContentView: View {
                 LabeledContent(L("Bluetooth", "Bluetooth"), value: link.bluetoothState)
             }
             LabeledContent(L("Watch", "Saat"), value: link.connectedName ?? (link.isConnecting ? L("Connecting…", "Bağlanıyor…") : L("Not connected", "Bağlı değil")))
-            LabeledContent(L("Pairing", "Eşleşme"), value: link.isPaired ? L("Encrypted connection", "Şifreli bağlantı kuruldu")
-                           : (link.huaweiChannelReady ? L("Channel ready, not paired", "Kanal hazır, eşleşilmedi") : L("None", "Yok")))
+            LabeledContent(L("Pairing", "Eşleşme"), value: link.pairingStage.label)
             if let battery = link.battery {
                 LabeledContent(L("Battery", "Pil"), value: "\(battery)%")
             }
@@ -196,6 +196,10 @@ struct ContentView: View {
                 Button(link.hasSavedPairing ? L("Pair (saved key)", "Eşleş (kayıtlı anahtarla)") : L("Pair", "Eşleş")) { link.pair() }
                     .disabled(!link.huaweiChannelReady || link.busy != nil)
                     .fontWeight(.semibold)
+                if !filmMode {
+                    SecureField(L("Huawei account ID (optional, 17 digits)", "Huawei hesap ID'si (isteğe bağlı, 17 hane)"), text: $huaweiAccountId)
+                        .keyboardType(.numberPad)
+                }
             } else if !filmMode {
                 Button(L("Refresh battery and watch info", "Pil ve saat bilgisini yenile")) { link.refresh() }
                     .disabled(link.busy != nil)
@@ -205,8 +209,8 @@ struct ContentView: View {
             Text(L("Watch", "Saat"))
         } footer: {
             if !link.isPaired && !link.hasSavedPairing && !filmMode {
-                Text(L("Close Huawei Health before pairing (swipe it up in the app switcher). The watch may ask for confirmation the first time.",
-                       "Eşleşmeden önce Huawei Health'i kapat (uygulama değiştiriciden yukarı kaydır). İlk eşleşmede saatin ekranında onay çıkabilir."))
+                Text(L("Close Huawei Health before pairing (swipe it up in the app switcher). The watch may ask for confirmation the first time. A watch set up with Huawei Health may still be tied to that Huawei account: if it reports \"Pairing failed\", enter the account ID (the userId cookie on cloud.huawei.com, see Gadgetbridge's Huawei pairing guide) and pair again.",
+                       "Eşleşmeden önce Huawei Health'i kapat (uygulama değiştiriciden yukarı kaydır). İlk eşleşmede saatin ekranında onay çıkabilir. Huawei Health ile kurulan saat o Huawei hesabına bağlı kalabilir: saat \"Eşleşme başarısız\" derse hesap ID'sini gir (cloud.huawei.com'daki userId çerezi, Gadgetbridge'in Huawei eşleşme rehberine bak) ve tekrar eşleş."))
             }
         }
     }
