@@ -161,7 +161,7 @@ final class FaceLibrary: ObservableObject {
 
     nonisolated static func sanitized(_ name: String) -> String {
         let cleaned = name.components(separatedBy: CharacterSet(charactersIn: "/\\:?%*|\"<>\0").union(.controlCharacters))
-            .joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
+            .joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".-")))
         return String((cleaned.isEmpty ? "Watch face" : cleaned).prefix(80))
     }
 
