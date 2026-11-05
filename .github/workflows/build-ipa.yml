@@ -15,7 +15,8 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-latest
+    # Intel image: the arm64 pool behind macos-latest repeatedly had no runner available (builds #7, #8)
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 
