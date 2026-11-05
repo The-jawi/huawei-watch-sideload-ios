@@ -35,6 +35,21 @@ targets:
         # voip: the watch speaker rings the watch with a CallKit call (refused without it); audio: keeps it playing when locked
         UIBackgroundModes: [bluetooth-central, audio, voip]
         UILaunchScreen: {}
+        # .hwt watch faces: "Open in…" / share sheet from Files hand a copy to the app (Documents/Inbox, moved into
+        # the library by FaceLibrary); the library folder shows up in Files under On My iPhone > HuaSideload
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: false
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Huawei watch face
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Owner
+            LSItemContentTypes: [com.huasideload.hwt]
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.huasideload.hwt
+            UTTypeDescription: Huawei watch face
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [hwt]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
     settings:
       base:
