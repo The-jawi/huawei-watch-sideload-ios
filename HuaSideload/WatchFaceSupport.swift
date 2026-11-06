@@ -262,10 +262,74 @@ enum WatchFaceUploadMethod: String, CaseIterable, Identifiable {
     }
 
     // "<9 digits>_<version>"; the version must be digits and dots (it is split off at the first "_"), else 1.0.0
-    func uploadName(number: Int, faceVersion: String) -> String {
+    // digits: 9 like Gadgetbridge; 10 like the store faces on newer watches (and Huawei Health's file info)
+    func uploadName(number: Int, faceVersion: String, digits: Int = 9) -> String {
         let digitsAndDots = !faceVersion.isEmpty && faceVersion.allSatisfy { $0.isASCII && ($0.isNumber || $0 == ".") }
             && faceVersion.first != "." && faceVersion.last != "."
         let version = usesFaceVersion && digitsAndDots ? faceVersion : "1.0.0"
-        return String(format: "%09d_", number % 1_000_000_000) + version
+        var limit = 1
+        for _ in 0..<digits { limit *= 10 }
+        return String(format: "%0\(digits)ld_", number % limit) + version
+    }
+}
+
+// Experiment. A capture of Huawei Health installing a face showed one step HuaSideload lacks: before the file info,
+// Huawei Health sends WatchfaceOperation (0x27/0x03) with ~1180 bytes of (encrypted) data and the watch answers;
+// after the transfer the watch confirms the face at once. Its layout is not public. Its size matches ability.xml +
+// hashCode from the .hwt plus name, version and an operation code, so these variants try that, each naming only the
+// new face (a fresh random ID that is on no watch). Operation 1 (activate) and 2 (delete) are never sent. The
+// watch's answers are logged in full: they are about this face only and hold no keys or account data.
+enum WatchFaceProbe {
+    static let storageKey = "HuaSideloadFaceProbe"
+    static var isEnabled: Bool { UserDefaults.standard.bool(forKey: storageKey) }
+
+    struct Variant {
+        var label: String
+        var tlv: HuaweiTLV
+    }
+
+    static let forbiddenOperations: Set<UInt8> = [1, 2]
+
+    static func variants(fileName: String, ability: [UInt8]?, hashCode: [UInt8]?) -> [Variant] {
+        let (name, version) = WatchFaceService.split(fileName)
+        func make(_ label: String, op: UInt8?, _ fields: [(UInt8, [UInt8]?)]) -> Variant {
+            var tlv = HuaweiTLV().with(0x01, Array(name.utf8)).with(0x02, Array(version.utf8))
+            if let op { tlv = tlv.with(0x03, [op]) }
+            for (tag, value) in fields { if let value { tlv = tlv.with(tag, value) } }
+            return Variant(label: label, tlv: tlv)
+        }
+        return [
+            make("1 op3 ability@04 hash@05", op: 3, [(0x04, ability), (0x05, hashCode)]),
+            make("2 op4 ability@04 hash@05", op: 4, [(0x04, ability), (0x05, hashCode)]),
+            make("3 op5 ability@04 hash@05", op: 5, [(0x04, ability), (0x05, hashCode)]),
+            make("4 op0 ability@04 hash@05", op: 0, [(0x04, ability), (0x05, hashCode)]),
+            make("5 op3 hash@04 ability@05", op: 3, [(0x04, hashCode), (0x05, ability)]),
+            make("6 no-op ability@03 hash@04", op: nil, [(0x03, ability), (0x04, hashCode)]),
+        ]
+    }
+
+    // The watch accepted it: result 0x7F = 100000, or an answer without an error code
+    static func accepted(_ reply: HuaweiTLV?) -> Bool {
+        guard let reply, !reply.items.isEmpty else { return false }
+        guard let code = reply.int(0x7F) else { return true }
+        return code == HuaweiPacket.resultSuccess
+    }
+
+    // Every tag: short values as hex and number, printable text quoted, longer data as its length
+    static func describe(_ reply: HuaweiTLV?) -> String {
+        guard let reply else { return L("no TLV", "TLV yok") }
+        guard !reply.items.isEmpty else { return L("empty", "boş") }
+        return reply.items.map { item -> String in
+            let v = item.value
+            let s = String(format: "%02X:", item.tag)
+            if v.isEmpty { return s + "-" }
+            if v.count >= 3, v.allSatisfy({ $0 >= 0x20 && $0 < 0x7F }) {
+                return s + "\"" + String(decoding: v.prefix(48), as: UTF8.self) + (v.count > 48 ? "…" : "") + "\""
+            }
+            if v.count <= 8 {
+                return s + v.map { String(format: "%02X", $0) }.joined() + "=" + String(v.reduce(0) { $0 << 8 | Int($1) })
+            }
+            return s + "\(v.count)B"
+        }.joined(separator: " ")
     }
 }
