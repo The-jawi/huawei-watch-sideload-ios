@@ -10,6 +10,8 @@ struct WatchFacePackage {
     let version: String
     let bin: [UInt8]
     let package: [UInt8]        // com.huawei.watchface as stored in the .hwt (WatchFaceUploadMethod)
+    let ability: [UInt8]?       // ability.xml and hashCode, for WatchFaceProbe
+    let hashCode: [UInt8]?
     // What the archive holds, for the pre-install check (sizes and names only)
     let root: String            // HwTheme (Huawei) or HnTheme (Honor)
     let files: [String]
@@ -52,6 +54,8 @@ struct WatchFacePackage {
         root = text.contains("<HnTheme") ? "HnTheme" : (text.contains("<HwTheme") ? "HwTheme" : "?")
         files = outer.names
         hasPreview = outer.names.contains("preview/cover.jpg")
+        ability = outer.file("ability.xml")
+        hashCode = outer.file("hashCode")
         guard let inner = outer.file("com.huawei.watchface") ?? outer.file("com.honor.watchface") else {
             throw PackageError.missing("com.huawei.watchface")
         }
