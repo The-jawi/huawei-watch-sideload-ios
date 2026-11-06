@@ -679,13 +679,19 @@ final class WatchLink: NSObject, ObservableObject {
                 let before = try? await session.installedWatchFaces()
                 self.append(.info, L("Watch faces before the upload: ", "Yüklemeden önceki kadranlar: ") + WatchFaceInstallCheck.describe(before))
 
-                // Like Gadgetbridge: a random numeric name with a version suffix
-                let name = String(format: "%09d_1.0.0", Int.random(in: 0..<1_000_000_000))
+                // A random numeric name with a version suffix (Gadgetbridge: always 1.0.0); what is sent and the
+                // version depend on the chosen upload method
+                let method = WatchFaceUploadMethod.current
+                let name = method.uploadName(number: Int.random(in: 0..<1_000_000_000), faceVersion: face.version)
+                let payload = method.payload(bin: face.bin, package: face.package)
+                let engine = self.watchFaceParams.map { L(", watch engine \($0.maxVersion.isEmpty ? "?" : $0.maxVersion)", ", saat motoru \($0.maxVersion.isEmpty ? "?" : $0.maxVersion)") } ?? ""
+                self.append(.info, L("Upload method \(method.label): \(payload.count) bytes as \(name) (face version \(face.version)\(engine), watchface.bin \(face.binWasZipped ? "inside a zip" : "is the file itself"))",
+                                     "Yükleme yöntemi \(method.label): \(payload.count) bayt, ad \(name) (kadran sürümü \(face.version)\(engine), watchface.bin \(face.binWasZipped ? "zip içinde" : "dosyanın kendisi"))"))
                 let faceName = WatchFaceService.split(name).name
                 self.faceConfirms[faceName] = nil
                 self.lastFaceConfirm = nil
                 self.setFaceStage(.transferring(0))
-                try await session.uploadFile(face.bin, name: name, type: FileUpload.FileType.watchface) { fraction in
+                try await session.uploadFile(payload, name: name, type: FileUpload.FileType.watchface) { fraction in
                     self.watchAppProgress = fraction
                     self.setFaceStage(.transferring(fraction))
                 }
