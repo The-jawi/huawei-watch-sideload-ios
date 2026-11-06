@@ -166,3 +166,62 @@ enum WatchFaceInstallStage: Equatable {
         }
     }
 }
+
+// Deciding whether an uploaded face reached the watch's list. The watch may report the face under a name other than
+// the upload name, so besides the exact name this also accepts the name the watch confirmed, and a single face that
+// was not on the watch before the upload (compared with the list fetched just before it).
+enum WatchFaceInstallCheck {
+    enum Match: Equatable {
+        case uploadName         // listed under the name we uploaded
+        case confirmedName      // listed under the name the watch confirmed
+        case newEntry           // the one face that was not in the list before the upload
+    }
+
+    enum Outcome: Equatable {
+        case listed(WatchFaceService.Installed, Match)
+        case confirmedOnly(WatchFaceService.ConfirmReport)
+        case notFound
+    }
+
+    static func evaluate(uploadName: String, before: [WatchFaceService.Installed]?, after: [WatchFaceService.Installed],
+                         confirm: WatchFaceService.ConfirmReport?) -> Outcome {
+        if let face = after.first(where: { $0.name == uploadName }) { return .listed(face, .uploadName) }
+        if let confirm, let face = after.first(where: { $0.name == confirm.name }) { return .listed(face, .confirmedName) }
+        if let before {
+            let known = Set(before.map(\.name))
+            let added = after.filter { !known.contains($0.name) }
+            if added.count == 1 { return .listed(added[0], .newEntry) }
+        }
+        if let confirm { return .confirmedOnly(confirm) }
+        return .notFound
+    }
+
+    // Names only (upload names are random numbers; built-in faces have plain names), for the log
+    static func describe(_ faces: [WatchFaceService.Installed]?) -> String {
+        guard let faces else { return L("not available", "alınamadı") }
+        guard !faces.isEmpty else { return L("empty", "boş") }
+        return "\(faces.count): " + faces.map { $0.name + ($0.isCurrent ? "*" : "") }.joined(separator: ", ")
+    }
+}
+
+// The post-upload trace: one line per packet, service/command and TLV tags with their lengths. Values are shown only
+// for result and status codes (0x7F, and tag 0x02 of the watch's 0x28/0x07 upload result), never anything else, so a
+// line can hold no key, IV, token, PIN or identifier.
+enum UploadTrace {
+    static func line(_ direction: String, service: UInt8, command: UInt8, tlv: HuaweiTLV?, bodySize: Int) -> String {
+        let text = String(format: "Trace %@: 0x%02X/0x%02X", direction, service, command)
+        guard let tlv else { return text + " [\(bodySize) B, not TLV]" }
+        let tags = tlv.items.map { item -> String in
+            var s = String(format: "%02X:%d", item.tag, item.value.count)
+            if showsValue(service: service, command: command, tag: item.tag), !item.value.isEmpty, item.value.count <= 4 {
+                s += "=" + String(item.value.reduce(0) { $0 << 8 | Int($1) })
+            }
+            return s
+        }
+        return text + " [" + (tags.isEmpty ? "-" : tags.joined(separator: " ")) + "]"
+    }
+
+    static func showsValue(service: UInt8, command: UInt8, tag: UInt8) -> Bool {
+        tag == 0x7F || (service == 0x28 && command == 0x07 && tag == 0x02)   // FileUpload result (HuaweiFeatures)
+    }
+}
