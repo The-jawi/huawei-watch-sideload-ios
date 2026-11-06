@@ -9,6 +9,7 @@ struct WatchFacePackage {
     let screen: String
     let version: String
     let bin: [UInt8]
+    let package: [UInt8]        // com.huawei.watchface as stored in the .hwt (WatchFaceUploadMethod)
     // What the archive holds, for the pre-install check (sizes and names only)
     let root: String            // HwTheme (Huawei) or HnTheme (Honor)
     let files: [String]
@@ -54,6 +55,7 @@ struct WatchFacePackage {
         guard let inner = outer.file("com.huawei.watchface") ?? outer.file("com.honor.watchface") else {
             throw PackageError.missing("com.huawei.watchface")
         }
+        package = inner
         if let innerZip = try? ZipArchive(inner), let bin = innerZip.file("watchface.bin") {
             self.bin = bin
             binWasZipped = true
