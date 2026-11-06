@@ -18,6 +18,7 @@ struct ContentView: View {
     // Offered only when a feature asks for it (WatchFeature.offersFilmMode); the plain app never shows it.
     @AppStorage("filmModeV2") private var filmModeOn = false
     @AppStorage(HuaweiSession.diagnosticsKey) private var pairingDiagnostics = false
+    @AppStorage(WatchFaceUploadMethod.storageKey) private var faceUploadMethod = WatchFaceUploadMethod.bin.rawValue
     // Kept in the Keychain (CredentialStore), not in UserDefaults
     @State private var huaweiAccountId = CredentialStore.shared.string(CredentialStore.huaweiAccountKey) ?? ""
     @State private var confirmingFirstPairing = false
@@ -340,14 +341,18 @@ struct ContentView: View {
             if let importStatus {
                 Text(importStatus).font(.footnote).foregroundStyle(.secondary)
             }
+            Picker(L("Upload method", "Yükleme yöntemi"), selection: $faceUploadMethod) {
+                ForEach(WatchFaceUploadMethod.allCases) { Text($0.label).tag($0.rawValue) }
+            }
+            .pickerStyle(.menu)
             ForEach(library.sorted) { entry in
                 faceRow(entry)
             }
         } header: {
             Text(L("Watch face library (on this iPhone)", "Kadran kütüphanesi (bu iPhone'da)"))
         } footer: {
-            Text(L("Imported faces are copied into the app and checked: COMPATIBLE, UNKNOWN (kept; you decide), INCOMPATIBLE (not installed) or CORRUPTED (not imported). A package names no device, firmware or API level, so even COMPATIBLE does not guarantee the watch accepts it. You can also send a .hwt from Files with Share or \"Open in\". Deleting removes only the copy on this iPhone, never anything on the watch.",
-                   "İçe aktarılan kadranlar uygulamaya kopyalanır ve denetlenir: UYUMLU, BİLİNMİYOR (saklanır; sen karar verirsin), UYUMSUZ (kurulmaz) ya da BOZUK (içe aktarılmaz). Paket cihaz, yazılım ya da API seviyesi belirtmez; UYUMLU bile saatin kabul edeceğini garanti etmez. Dosyalar'dan Paylaş ya da \"Birlikte aç\" ile de .hwt gönderebilirsin. Silmek yalnızca bu iPhone'daki kopyayı siler, saatte hiçbir şeyi silmez."))
+            Text(L("Upload method: A is what Gadgetbridge sends (LiteOS watches). C sends com.huawei.watchface unchanged, which full HarmonyOS watches expect. B and D use the face's own version in the file name. If A transfers but the face never appears, try C, then D, then B. " + "Imported faces are copied into the app and checked: COMPATIBLE, UNKNOWN (kept; you decide), INCOMPATIBLE (not installed) or CORRUPTED (not imported). A package names no device, firmware or API level, so even COMPATIBLE does not guarantee the watch accepts it. You can also send a .hwt from Files with Share or \"Open in\". Deleting removes only the copy on this iPhone, never anything on the watch.",
+                   "Yükleme yöntemi: A, Gadgetbridge'in gönderdiğidir (LiteOS saatler). C, com.huawei.watchface'i olduğu gibi gönderir; tam HarmonyOS saatler bunu bekler. B ve D dosya adında kadranın kendi sürümünü kullanır. A aktarılıp kadran hiç görünmezse C, sonra D, sonra B'yi dene. " + "İçe aktarılan kadranlar uygulamaya kopyalanır ve denetlenir: UYUMLU, BİLİNMİYOR (saklanır; sen karar verirsin), UYUMSUZ (kurulmaz) ya da BOZUK (içe aktarılmaz). Paket cihaz, yazılım ya da API seviyesi belirtmez; UYUMLU bile saatin kabul edeceğini garanti etmez. Dosyalar'dan Paylaş ya da \"Birlikte aç\" ile de .hwt gönderebilirsin. Silmek yalnızca bu iPhone'daki kopyayı siler, saatte hiçbir şeyi silmez."))
         }
         .fileImporter(isPresented: $pickingWatchFace, allowedContentTypes: [.hwt, .data], allowsMultipleSelection: true) { result in
             switch result {
@@ -413,7 +418,8 @@ struct ContentView: View {
     // The existing install engine (WatchLink) does the transfer, the watch's confirmation and the list check
     private func install(_ entry: FaceLibrary.Entry) {
         link.installWatchFace(library.url(for: entry), title: entry.title) { stage in
-            library.recordInstall(entry, result: stage.label, succeeded: stage == .installed || stage == .active)
+            library.recordInstall(entry, result: WatchFaceUploadMethod.current.shortLabel + ": " + stage.label,
+                                  succeeded: stage == .installed || stage == .active)
         }
     }
 
