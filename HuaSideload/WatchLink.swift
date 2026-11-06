@@ -682,11 +682,34 @@ final class WatchLink: NSObject, ObservableObject {
                 // A random numeric name with a version suffix (Gadgetbridge: always 1.0.0); what is sent and the
                 // version depend on the chosen upload method
                 let method = WatchFaceUploadMethod.current
-                let name = method.uploadName(number: Int.random(in: 0..<1_000_000_000), faceVersion: face.version)
+                let probing = WatchFaceProbe.isEnabled
+                // The probe uses a 10-digit ID, like the store faces and Huawei Health (29…: outside their 218… range)
+                let name = probing
+                    ? method.uploadName(number: Int.random(in: 2_900_000_000..<3_000_000_000), faceVersion: face.version, digits: 10)
+                    : method.uploadName(number: Int.random(in: 0..<1_000_000_000), faceVersion: face.version)
                 let payload = method.payload(bin: face.bin, package: face.package)
                 let engine = self.watchFaceParams.map { L(", watch engine \($0.maxVersion.isEmpty ? "?" : $0.maxVersion)", ", saat motoru \($0.maxVersion.isEmpty ? "?" : $0.maxVersion)") } ?? ""
                 self.append(.info, L("Upload method \(method.label): \(payload.count) bytes as \(name) (face version \(face.version)\(engine), watchface.bin \(face.binWasZipped ? "inside a zip" : "is the file itself"))",
                                      "Yükleme yöntemi \(method.label): \(payload.count) bayt, ad \(name) (kadran sürümü \(face.version)\(engine), watchface.bin \(face.binWasZipped ? "zip içinde" : "dosyanın kendisi"))"))
+                if probing {
+                    self.append(.info, L("Probe: ability.xml \(face.ability?.count ?? 0) bytes, hashCode \(face.hashCode?.count ?? 0) bytes, face \(name)",
+                                         "Deneme: ability.xml \(face.ability?.count ?? 0) bayt, hashCode \(face.hashCode?.count ?? 0) bayt, kadran \(name)"))
+                    for variant in WatchFaceProbe.variants(fileName: name, ability: face.ability, hashCode: face.hashCode) {
+                        let bytes = variant.tlv.serialize().count
+                        do {
+                            let reply = try await session.rawRequest(WatchFaceService.serviceId, WatchFaceService.operationCommand, variant.tlv,
+                                                                     label: L("Probe \(variant.label) (\(bytes) bytes)", "Deneme \(variant.label) (\(bytes) bayt)"),
+                                                                     sliced: true)
+                            let ok = WatchFaceProbe.accepted(reply)
+                            self.append(ok ? .success : .info, L("Probe \(variant.label): watch answered ", "Deneme \(variant.label): saat yanıtı ")
+                                        + WatchFaceProbe.describe(reply) + (ok ? L(" -> accepted", " -> kabul") : ""))
+                            if ok { break }
+                        } catch {
+                            self.append(.info, L("Probe \(variant.label): no answer (\(error))", "Deneme \(variant.label): yanıt yok (\(error))"))
+                        }
+                    }
+                    self.append(.info, L("Probe finished; uploading the face now", "Deneme bitti; kadran şimdi yükleniyor"))
+                }
                 let faceName = WatchFaceService.split(name).name
                 self.faceConfirms[faceName] = nil
                 self.lastFaceConfirm = nil
