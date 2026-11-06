@@ -50,6 +50,8 @@ final class WatchLink: NSObject, ObservableObject {
     // The connected watch is also held by another app on this iPhone (usually Huawei Health)
     @Published private(set) var sharedWithOtherApp = false
     private var faceConfirms: [String: WatchFaceService.ConfirmReport] = [:]
+    // The latest WatchfaceConfirm, whatever name the watch used for the face
+    private var lastFaceConfirm: WatchFaceService.ConfirmReport?
     // The watch asks for song info by file name: file name -> (title, artist)
     private var musicMetadata: [String: (title: String, artist: String)] = [:]
     private var lastInstallStatus: Int?
@@ -673,10 +675,15 @@ final class WatchLink: NSObject, ObservableObject {
                     return
                 }
 
+                // The list before the upload, to recognise the new face even if the watch lists it under another name
+                let before = try? await session.installedWatchFaces()
+                self.append(.info, L("Watch faces before the upload: ", "Yüklemeden önceki kadranlar: ") + WatchFaceInstallCheck.describe(before))
+
                 // Like Gadgetbridge: a random numeric name with a version suffix
                 let name = String(format: "%09d_1.0.0", Int.random(in: 0..<1_000_000_000))
                 let faceName = WatchFaceService.split(name).name
                 self.faceConfirms[faceName] = nil
+                self.lastFaceConfirm = nil
                 self.setFaceStage(.transferring(0))
                 try await session.uploadFile(face.bin, name: name, type: FileUpload.FileType.watchface) { fraction in
                     self.watchAppProgress = fraction
@@ -684,26 +691,54 @@ final class WatchLink: NSObject, ObservableObject {
                 }
                 self.watchAppProgress = nil
                 self.setFaceStage(.transferred)
-                self.append(.success, L("Transfer finished (the watch accepted the file). Waiting for it to confirm the face…",
-                                        "Aktarım bitti (saat dosyayı aldı). Saatin kadranı onaylaması bekleniyor…"))
+                self.append(.success, L("Transfer finished (the watch accepted the file as \(faceName)). Waiting for it to confirm and list the face…",
+                                        "Aktarım bitti (saat dosyayı \(faceName) olarak aldı). Saatin kadranı onaylayıp listelemesi bekleniyor…"))
 
-                // The watch sends WatchfaceConfirm once it has stored the face (handled in HuaweiSession)
-                for _ in 0..<40 where self.faceConfirms[faceName] == nil {
+                // The watch sends WatchfaceConfirm (0x27/0x05) once it has stored the face; HuaweiSession answers it at
+                // any time. Gadgetbridge has no deadline for it, and storing a face can take a while, so the list is
+                // checked every few seconds for up to 90 s instead of once after 20 s.
+                let started = Date()
+                var after: [WatchFaceService.Installed] = []
+                var listChecks = 0
+                var outcome = WatchFaceInstallCheck.Outcome.notFound
+                var nextListCheck = started.addingTimeInterval(4)
+                while Date().timeIntervalSince(started) < 90 {
                     try? await Task.sleep(for: .milliseconds(500))
+                    let confirm = self.faceConfirms[faceName] ?? self.lastFaceConfirm
+                    if confirm != nil, self.watchFaceStage == .transferred { self.setFaceStage(.confirmedByWatch) }
+                    guard Date() >= nextListCheck || (confirm != nil && listChecks == 0) else { continue }
+                    nextListCheck = Date().addingTimeInterval(6)
+                    listChecks += 1
+                    guard let list = try? await session.installedWatchFaces() else { continue }
+                    after = list
+                    outcome = WatchFaceInstallCheck.evaluate(uploadName: faceName, before: before, after: list, confirm: confirm)
+                    if case .listed = outcome { break }
                 }
-                let confirmed = self.faceConfirms[faceName] != nil
-                if confirmed { self.setFaceStage(.confirmedByWatch) }
+                session.stopTrace()
+                let confirm = self.faceConfirms[faceName] ?? self.lastFaceConfirm
+                let waited = Int(Date().timeIntervalSince(started))
+                self.append(.info, L("Watch faces after the upload: ", "Yüklemeden sonraki kadranlar: ") + WatchFaceInstallCheck.describe(after)
+                            + L(" (\(listChecks) checks in \(waited) s)", " (\(waited) sn içinde \(listChecks) kontrol)"))
+                if let confirm, confirm.name != faceName {
+                    self.append(.info, L("The watch confirmed the face as \(confirm.fileName), not \(name)", "Saat kadranı \(name) değil \(confirm.fileName) olarak onayladı"))
+                }
 
-                let listed = (try? await session.installedWatchFaces())?.first { $0.name == faceName }
-                if let listed {
+                switch outcome {
+                case .listed(let listed, let match):
+                    if match != .uploadName {
+                        self.append(.info, L("Found as \(listed.name) (", "\(listed.name) olarak bulundu (")
+                                    + (match == .confirmedName ? L("the confirmed name)", "onaylanan ad)") : L("the one new face in the list)", "listedeki tek yeni kadran)")))
+                    }
                     self.setFaceStage(listed.isCurrent ? .active : .installed)
                     self.append(.success, self.watchFaceStage.label)
-                } else if confirmed {
-                    self.append(.info, L("The watch confirmed the face but did not list it (yet). Check the watch face list on the watch.",
-                                         "Saat kadranı onayladı ama listesinde göstermedi (henüz). Saatteki kadran listesine bak."))
-                } else {
-                    self.setFaceStage(.failed(L("the file was transferred, but the watch neither confirmed nor listed the face",
-                                                "dosya aktarıldı ama saat kadranı ne onayladı ne listeledi")))
+                case .confirmedOnly:
+                    self.append(.info, L("The watch confirmed the face but did not list it within \(waited) s. Check the watch face list on the watch.",
+                                         "Saat kadranı onayladı ama \(waited) sn içinde listelemedi. Saatteki kadran listesine bak."))
+                case .notFound:
+                    // Where it stopped: the last thing the watch did, for the report
+                    let status = session.lastUploadResultStatus.map { L(", status \($0)", ", durum \($0)") } ?? ""
+                    self.setFaceStage(.failed(L("the watch took the whole file (0x28/0x07\(status), acknowledged) but sent no confirmation (0x27/0x05) and did not list the face within \(waited) s",
+                                                "saat dosyanın tamamını aldı (0x28/0x07\(status), onaylandı) ama \(waited) sn içinde onay (0x27/0x05) göndermedi ve kadranı listelemedi")))
                     self.append(.error, self.watchFaceStage.label)
                 }
             } catch {
@@ -722,6 +757,7 @@ final class WatchLink: NSObject, ObservableObject {
     // as Gadgetbridge does.
     private func watchFaceConfirmed(_ report: WatchFaceService.ConfirmReport) {
         faceConfirms[report.name] = report
+        lastFaceConfirm = report
         guard report.reportType == 2 else { return }
         Task {
             let code = try? await session.activateWatchFace(fileName: report.fileName)
