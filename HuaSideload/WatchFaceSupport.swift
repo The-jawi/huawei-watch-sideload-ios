@@ -225,3 +225,47 @@ enum UploadTrace {
         tag == 0x7F || (service == 0x28 && command == 0x07 && tag == 0x02)   // FileUpload result (HuaweiFeatures)
     }
 }
+
+// What is sent as the watch face file, and under which name. Watches differ (Gadgetbridge PR #3910): LiteOS watches
+// take watchface.bin from inside com.huawei.watchface; full HarmonyOS watches take com.huawei.watchface itself, a zip,
+// unchanged. Gadgetbridge always names the file "<random>_1.0.0"; the face's own <version> is the other choice.
+// Nothing tells the phone which one a watch wants, so it is a setting to try.
+enum WatchFaceUploadMethod: String, CaseIterable, Identifiable {
+    case bin                    // watchface.bin, "<random>_1.0.0" (Gadgetbridge, LiteOS watches)
+    case binFaceVersion         // watchface.bin, "<random>_<face version>"
+    case package                // com.huawei.watchface unchanged, "<random>_1.0.0" (full HarmonyOS watches)
+    case packageFaceVersion     // com.huawei.watchface unchanged, "<random>_<face version>"
+
+    static let storageKey = "HuaSideloadFaceUploadMethod"
+    static var current: WatchFaceUploadMethod {
+        UserDefaults.standard.string(forKey: storageKey).flatMap(WatchFaceUploadMethod.init(rawValue:)) ?? .bin
+    }
+
+    var id: String { rawValue }
+    var sendsPackage: Bool { self == .package || self == .packageFaceVersion }
+    var usesFaceVersion: Bool { self == .binFaceVersion || self == .packageFaceVersion }
+
+    var label: String {
+        switch self {
+        case .bin: return L("A: watchface.bin, version 1.0.0 (standard)", "A: watchface.bin, sürüm 1.0.0 (standart)")
+        case .binFaceVersion: return L("B: watchface.bin, the face's version", "B: watchface.bin, kadranın sürümü")
+        case .package: return L("C: whole com.huawei.watchface, version 1.0.0", "C: tüm com.huawei.watchface, sürüm 1.0.0")
+        case .packageFaceVersion: return L("D: whole com.huawei.watchface, the face's version", "D: tüm com.huawei.watchface, kadranın sürümü")
+        }
+    }
+
+    var shortLabel: String { String(label.prefix(1)) }
+
+    // The bytes to upload. Without a zipped watchface.bin both are the same file.
+    func payload(bin: [UInt8], package: [UInt8]) -> [UInt8] {
+        sendsPackage ? package : bin
+    }
+
+    // "<9 digits>_<version>"; the version must be digits and dots (it is split off at the first "_"), else 1.0.0
+    func uploadName(number: Int, faceVersion: String) -> String {
+        let digitsAndDots = !faceVersion.isEmpty && faceVersion.allSatisfy { $0.isASCII && ($0.isNumber || $0 == ".") }
+            && faceVersion.first != "." && faceVersion.last != "."
+        let version = usesFaceVersion && digitsAndDots ? faceVersion : "1.0.0"
+        return String(format: "%09d_", number % 1_000_000_000) + version
+    }
+}
