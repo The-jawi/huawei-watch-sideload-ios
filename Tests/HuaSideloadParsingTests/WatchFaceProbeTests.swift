@@ -1,7 +1,7 @@
 import XCTest
 @testable import HuaSideloadParsing
 
-// The experimental pre-install probe (WatchFaceProbe): what it sends, and how it reads the watch's answers
+// The experimental pre-install message (WatchFaceProbe, operation 5): what it sends, and how it reads the answer
 final class WatchFaceProbeTests: XCTestCase {
     override func setUp() {
         UserDefaults.standard.set("en", forKey: AppLanguage.storageKey)
@@ -10,48 +10,46 @@ final class WatchFaceProbeTests: XCTestCase {
     private let ability = Array("<attribute/>".utf8)
     private let hashBytes = Array("AA,BB,CC,DD".utf8)
 
-    func testEveryVariantNamesOnlyTheNewFace() {
-        let variants = WatchFaceProbe.variants(fileName: "2912345678_1.0.0", ability: ability, hashCode: hashBytes)
-        XCTAssertEqual(variants.count, 6)
-        for v in variants {
-            XCTAssertEqual(v.tlv.value(0x01), Array("2912345678".utf8), v.label)
-            XCTAssertEqual(v.tlv.value(0x02), Array("1.0.0".utf8), v.label)
-        }
+    private func message(_ layout: WatchFaceProbe.Layout, ability: [UInt8]? = nil, hashCode: [UInt8]? = nil) -> HuaweiTLV {
+        WatchFaceProbe.message(fileName: "2912345678_1.0.0", ability: ability ?? self.ability, hashCode: hashCode ?? hashBytes, layout: layout)
     }
 
-    // Activate (1) and delete (2) are never sent
-    func testNoActivateOrDelete() {
-        for v in WatchFaceProbe.variants(fileName: "2912345678_1.0.0", ability: ability, hashCode: hashBytes) {
-            if let op = v.tlv.value(0x03), op.count == 1 {
-                XCTAssertFalse(WatchFaceProbe.forbiddenOperations.contains(op[0]), v.label)
-            }
+    // Every layout names only the new face and uses operation 5, never activate (1) or delete (2)
+    func testEveryLayoutIsOperation5ForTheNewFace() {
+        for layout in WatchFaceProbe.Layout.allCases {
+            let tlv = message(layout)
+            XCTAssertEqual(tlv.value(0x01), Array("2912345678".utf8), layout.rawValue)
+            XCTAssertEqual(tlv.value(0x02), Array("1.0.0".utf8), layout.rawValue)
+            XCTAssertEqual(tlv.value(0x03), [5], layout.rawValue)
+            XCTAssertFalse(WatchFaceProbe.forbiddenOperations.contains(WatchFaceProbe.operation))
         }
     }
 
     func testLayouts() {
-        let v = WatchFaceProbe.variants(fileName: "2912345678_1.0.0", ability: ability, hashCode: hashBytes)
-        XCTAssertEqual(v[0].tlv.value(0x03), [3])
-        XCTAssertEqual(v[0].tlv.value(0x04), ability)
-        XCTAssertEqual(v[0].tlv.value(0x05), hashBytes)
-        XCTAssertEqual(v[4].tlv.value(0x04), hashBytes)
-        XCTAssertEqual(v[4].tlv.value(0x05), ability)
-        XCTAssertEqual(v[5].tlv.value(0x03), ability)
-        XCTAssertEqual(v[5].tlv.value(0x04), hashBytes)
+        XCTAssertEqual(message(.abilityHash).value(0x04), ability)
+        XCTAssertEqual(message(.abilityHash).value(0x05), hashBytes)
+        XCTAssertEqual(message(.hashAbility).value(0x04), hashBytes)
+        XCTAssertEqual(message(.hashAbility).value(0x05), ability)
+        XCTAssertEqual(message(.abilityHashHigh).value(0x06), ability)
+        XCTAssertEqual(message(.abilityHashHigh).value(0x07), hashBytes)
+        XCTAssertEqual(message(.bare).items.map(\.tag), [0x01, 0x02, 0x03])
     }
 
-    // A package without ability.xml or hashCode: those tags are left out, nothing else changes
+    // A package without ability.xml or hashCode: those tags are left out
     func testMissingFilesAreLeftOut() {
-        let v = WatchFaceProbe.variants(fileName: "2912345678_1.0.0", ability: nil, hashCode: nil)
-        XCTAssertEqual(v[0].tlv.items.map(\.tag), [0x01, 0x02, 0x03])
-        XCTAssertEqual(v[5].tlv.items.map(\.tag), [0x01, 0x02])
+        let tlv = WatchFaceProbe.message(fileName: "2912345678_1.0.0", ability: nil, hashCode: nil, layout: .abilityHash)
+        XCTAssertEqual(tlv.items.map(\.tag), [0x01, 0x02, 0x03])
     }
 
+    // The watch's answer seen on a Watch Fit 4 Pro: name, version, 04 = 1, 7F = 0
     func testAccepted() {
-        XCTAssertTrue(WatchFaceProbe.accepted(HuaweiTLV().with(0x7F, [0x00, 0x01, 0x86, 0xA0])))
-        XCTAssertFalse(WatchFaceProbe.accepted(HuaweiTLV().with(0x7F, [0x00, 0x01, 0x86, 0xA3])))
-        XCTAssertTrue(WatchFaceProbe.accepted(HuaweiTLV().with(0x01, Array("2912345678".utf8))))
-        XCTAssertFalse(WatchFaceProbe.accepted(HuaweiTLV()))
-        XCTAssertFalse(WatchFaceProbe.accepted(nil))
+        let name = "2944597081"
+        let seen = HuaweiTLV().with(0x01, Array(name.utf8)).with(0x02, Array("1.0.0".utf8)).with(0x04, [1]).with(0x7F, [0, 0, 0, 0])
+        XCTAssertTrue(WatchFaceProbe.accepted(seen, name: name))
+        XCTAssertTrue(WatchFaceProbe.accepted(HuaweiTLV().with(0x01, Array(name.utf8)).with(0x7F, [0x00, 0x01, 0x86, 0xA0]), name: name))
+        XCTAssertFalse(WatchFaceProbe.accepted(HuaweiTLV().with(0x7F, [0x00, 0x01, 0x86, 0xA7]), name: name))   // 100007
+        XCTAssertFalse(WatchFaceProbe.accepted(HuaweiTLV().with(0x01, Array("1111111111".utf8)), name: name))
+        XCTAssertFalse(WatchFaceProbe.accepted(nil, name: name))
     }
 
     func testDescribe() {
@@ -60,6 +58,15 @@ final class WatchFaceProbeTests: XCTestCase {
         XCTAssertEqual(WatchFaceProbe.describe(reply), "01:\"2912345678\" 7F:000186A3=100003 04:- 09:20B")
         XCTAssertEqual(WatchFaceProbe.describe(nil), "no TLV")
         XCTAssertEqual(WatchFaceProbe.describe(HuaweiTLV()), "empty")
+    }
+
+    func testStoredLayout() {
+        UserDefaults.standard.removeObject(forKey: WatchFaceProbe.layoutKey)
+        XCTAssertEqual(WatchFaceProbe.currentLayout, .abilityHash)
+        UserDefaults.standard.set("bare", forKey: WatchFaceProbe.layoutKey)
+        XCTAssertEqual(WatchFaceProbe.currentLayout, .bare)
+        UserDefaults.standard.removeObject(forKey: WatchFaceProbe.layoutKey)
+        XCTAssertEqual(WatchFaceProbe.Layout.allCases.map(\.shortLabel), ["1", "2", "3", "4"])
     }
 
     func testTenDigitUploadNames() {
@@ -72,5 +79,12 @@ final class WatchFaceProbeTests: XCTestCase {
         let face = try WatchFacePackage(hwt: TestHWT.package())
         XCTAssertEqual(face.ability.map { String(decoding: $0, as: UTF8.self).contains("<attribute>") }, true)
         XCTAssertEqual(face.hashCode.map { String(decoding: $0, as: UTF8.self).split(separator: ",").count }, 4)
+    }
+
+    // The bundled faces carry both files, so they can test the layouts
+    func testBundledSampleHasAbilityAndHashCode() throws {
+        let face = try WatchFacePackage(hwt: try TestHWT.sample("Donen.hwt"))
+        XCTAssertEqual(face.ability?.count, 902)
+        XCTAssertEqual(face.hashCode?.count, 259)
     }
 }
