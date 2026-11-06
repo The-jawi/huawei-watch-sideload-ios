@@ -67,6 +67,22 @@ final class HuaweiSession {
     }
     private var upload: Upload?
 
+    // Post-upload trace (UploadTrace): from the last chunk on, every packet in and out is logged as service/command
+    // and tag lengths, plus unhandled packets, so the log shows where the watch stops after a transfer
+    private var traceUntil: Date?
+    private var tracing: Bool { traceUntil.map { Date() < $0 } ?? false }
+
+    func traceTraffic(for seconds: Double) {
+        traceUntil = Date().addingTimeInterval(seconds)
+    }
+
+    func stopTrace() {
+        traceUntil = nil
+    }
+
+    // The watch's 0x28/0x07 for the last upload: tag 0x02 (status) if it sent one
+    private(set) var lastUploadResultStatus: Int?
+
     // P2P: replies are matched by sequence number (HuaweiBaseP2PService.waitPackets)
     private var p2pSequence: UInt16 = 1
     private var p2pWaiters: [UInt16: CheckedContinuation<P2P.Message, Error>] = [:]
@@ -144,7 +160,12 @@ final class HuaweiSession {
             }
         }
 
-        if let i = waiters.firstIndex(where: { $0.serviceId == packet.serviceId && $0.commandId == packet.commandId }) {
+        let waiterIndex = waiters.firstIndex(where: { $0.serviceId == packet.serviceId && $0.commandId == packet.commandId })
+        if tracing {
+            log(.info, UploadTrace.line("in", service: packet.serviceId, command: packet.commandId, tlv: packet.tlv, bodySize: packet.body.count)
+                + (waiterIndex != nil ? L(" -> answer to our request", " -> isteğimize yanıt") : L(" -> sent by the watch", " -> saatin kendi mesajı")))
+        }
+        if let i = waiterIndex {
             waiters.remove(at: i).continuation.resume(returning: packet)
         } else {
             handleUnsolicited(packet)
@@ -210,7 +231,7 @@ final class HuaweiSession {
     // Diagnostics, off by default: log unsolicited packets that nothing handles, e.g. to find out whether a button on
     // the watch sends anything. A feature turns it on with the UserDefaults key "HuaSideloadLogUnhandledPackets".
     private func logUnhandled(_ packet: HuaweiPacket) {
-        guard UserDefaults.standard.bool(forKey: "HuaSideloadLogUnhandledPackets") else { return }
+        guard tracing || UserDefaults.standard.bool(forKey: "HuaSideloadLogUnhandledPackets") else { return }
         let tags = packet.tlv?.items.map { item in
             String(format: "%02X=", item.tag) + (item.value.count <= 8 ? item.value.map { String(format: "%02X", $0) }.joined() : "\(item.value.count)B")
         }.joined(separator: " ") ?? "\(packet.body.count)B"
@@ -243,6 +264,7 @@ final class HuaweiSession {
 
     // Fire and forget (acknowledgements and updates)
     func send(_ serviceId: UInt8, _ commandId: UInt8, _ tlv: HuaweiTLV, encrypted: Bool = true) {
+        if tracing { log(.info, UploadTrace.line("out", service: serviceId, command: commandId, tlv: tlv, bodySize: 0)) }
         do {
             try frames(serviceId, commandId, tlv, encrypted: encrypted, sliced: false).forEach(writeFrame)
         } catch {
@@ -254,6 +276,7 @@ final class HuaweiSession {
                  encrypted: Bool = true, sliced: Bool = false, timeout: Double = 10, quiet: Bool = false) async throws -> HuaweiPacket {
         let frames = try frames(serviceId, commandId, tlv, encrypted: encrypted, sliced: sliced)
         lastRequest = String(format: "0x%02X/0x%02X ", serviceId, commandId) + label
+        if tracing { log(.info, UploadTrace.line("out", service: serviceId, command: commandId, tlv: tlv, bodySize: 0) + " (\(label))") }
         if !quiet {
             let size = frames.reduce(0) { $0 + $1.count }
             let encryptedNote = encrypted ? L(" (encrypted)", " (şifreli)") : ""
@@ -635,6 +658,7 @@ final class HuaweiSession {
         guard upload == nil else { throw HuaweiAuthError.unexpected(L("another upload is running", "zaten bir yükleme sürüyor")) }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             upload = Upload(data: data, sha256: HCrypto.sha256(data), progress: progress, continuation: continuation)
+            lastUploadResultStatus = nil
             Task {
                 do {
                     let response = try await request(FileUpload.serviceId, FileUpload.Command.info,
@@ -711,13 +735,25 @@ final class HuaweiSession {
                 return
             }
             current.progress(Double(offset + slice.count) / Double(current.data.count))
+            if offset + slice.count >= current.data.count {
+                traceTraffic(for: 150)
+                log(.info, L("Last chunk sent: offset \(offset), \(slice.count) bytes (file \(current.fileId), \(current.data.count) bytes in all). Tracing the watch's replies…",
+                             "Son parça gönderildi: konum \(offset), \(slice.count) bayt (dosya \(current.fileId), toplam \(current.data.count) bayt). Saatin yanıtları izleniyor…"))
+            }
         case FileUpload.Command.result:
+            // Gadgetbridge (FileUploadResult) answers 0x7F = success + file id and does not read the status; it is
+            // logged here so a rejection by the watch is visible
+            lastUploadResultStatus = tlv.int(0x02)
+            let status = lastUploadResultStatus.map(String.init) ?? L("none", "yok")
+            log(.info, L("Watch upload result 0x28/0x07: file \(tlv.value(0x01)?.first.map(String.init) ?? "?"), status \(status)",
+                         "Saatin yükleme sonucu 0x28/0x07: dosya \(tlv.value(0x01)?.first.map(String.init) ?? "?"), durum \(status)"))
             send(FileUpload.serviceId, FileUpload.Command.result, FileUpload.complete(fileId: current.fileId))
             current.progress(1)
-            log(.success, L("The watch received the whole file", "Saat dosyayı tamamen aldı"))
+            log(.success, L("The watch received the whole file; result acknowledged", "Saat dosyayı tamamen aldı; sonuç onaylandı"))
             finishUpload(nil)
         case FileUpload.Command.deviceError:
             let code = tlv.int(0x7F) ?? -1
+            log(.error, L("Watch upload error 0x28/0x08: code \(code)", "Saatin yükleme hatası 0x28/0x08: kod \(code)"))
             finishUpload(HuaweiAuthError.watchError(FileUpload.describe(error: code)))
         default:
             upload = current
