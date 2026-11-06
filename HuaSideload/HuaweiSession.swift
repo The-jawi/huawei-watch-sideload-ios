@@ -627,8 +627,8 @@ final class HuaweiSession {
         return MusicControl.storage(tlv)
     }
 
-    func rawRequest(_ service: UInt8, _ command: UInt8, _ tlv: HuaweiTLV, label: String) async throws -> HuaweiTLV? {
-        try await request(service, command, tlv, label: label, timeout: 6).tlv
+    func rawRequest(_ service: UInt8, _ command: UInt8, _ tlv: HuaweiTLV, label: String, sliced: Bool = false) async throws -> HuaweiTLV? {
+        try await request(service, command, tlv, label: label, sliced: sliced, timeout: 6).tlv
     }
 
     func supportedServices() async throws -> [UInt8] {
