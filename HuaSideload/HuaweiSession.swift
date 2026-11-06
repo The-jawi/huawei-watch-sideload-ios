@@ -199,8 +199,9 @@ final class HuaweiSession {
         if isPaired, packet.serviceId == WatchFaceService.serviceId, packet.commandId == WatchFaceService.confirmCommand,
            let tlv = packet.tlv, let report = WatchFaceService.parseConfirm(tlv) {
             send(WatchFaceService.serviceId, WatchFaceService.confirmCommand, WatchFaceService.confirmReply(fileName: report.fileName))
-            log(.info, L("The watch confirmed watch face \(report.fileName) (report type \(report.reportType)); confirmation sent",
-                         "Saat \(report.fileName) kadranını onayladı (bildirim türü \(report.reportType)); onay gönderildi"))
+            let field04 = tlv.int(0x04).map(String.init) ?? "-"
+            log(.info, L("The watch confirmed watch face \(report.fileName) (report type \(report.reportType), field 04 = \(field04)); confirmation sent",
+                         "Saat \(report.fileName) kadranını onayladı (bildirim türü \(report.reportType), alan 04 = \(field04)); onay gönderildi"))
             onWatchFaceConfirm?(report)
             return
         }

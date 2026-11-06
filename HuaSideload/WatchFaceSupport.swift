@@ -273,46 +273,64 @@ enum WatchFaceUploadMethod: String, CaseIterable, Identifiable {
     }
 }
 
-// Experiment. A capture of Huawei Health installing a face showed one step HuaSideload lacks: before the file info,
-// Huawei Health sends WatchfaceOperation (0x27/0x03) with ~1180 bytes of (encrypted) data and the watch answers;
-// after the transfer the watch confirms the face at once. Its layout is not public. Its size matches ability.xml +
-// hashCode from the .hwt plus name, version and an operation code, so these variants try that, each naming only the
-// new face (a fresh random ID that is on no watch). Operation 1 (activate) and 2 (delete) are never sent. The
-// watch's answers are logged in full: they are about this face only and hold no keys or account data.
+// Experiment, from a Bluetooth capture of Huawei Health installing a face. Before the file info Huawei Health sends
+// WatchfaceOperation (0x27/0x03) with ~1180 bytes of (encrypted) data; the watch answers with name, version, tag 04
+// and a result code, and after the transfer confirms the face at once. Probing showed operation 5 is the only one the
+// watch answers that way (3, 4, 0 and none: 100007). The rest of Huawei Health's message is unknown; its size matches
+// ability.xml + hashCode from the .hwt, so the layout (which tags carry them) is a setting. One message per install,
+// naming only the new face (a fresh random ID that is on no watch). Operations 1 (activate) and 2 (delete) are never
+// sent by the probe. The watch's answer is logged in full: it is about this face only and holds no keys or account data.
 enum WatchFaceProbe {
     static let storageKey = "HuaSideloadFaceProbe"
+    static let layoutKey = "HuaSideloadFaceProbeLayout"
     static var isEnabled: Bool { UserDefaults.standard.bool(forKey: storageKey) }
 
-    struct Variant {
-        var label: String
-        var tlv: HuaweiTLV
-    }
-
+    static let operation: UInt8 = 5
     static let forbiddenOperations: Set<UInt8> = [1, 2]
 
-    static func variants(fileName: String, ability: [UInt8]?, hashCode: [UInt8]?) -> [Variant] {
-        let (name, version) = WatchFaceService.split(fileName)
-        func make(_ label: String, op: UInt8?, _ fields: [(UInt8, [UInt8]?)]) -> Variant {
-            var tlv = HuaweiTLV().with(0x01, Array(name.utf8)).with(0x02, Array(version.utf8))
-            if let op { tlv = tlv.with(0x03, [op]) }
-            for (tag, value) in fields { if let value { tlv = tlv.with(tag, value) } }
-            return Variant(label: label, tlv: tlv)
+    enum Layout: String, CaseIterable, Identifiable {
+        case abilityHash        // 04 = ability.xml, 05 = hashCode
+        case hashAbility        // 04 = hashCode, 05 = ability.xml
+        case abilityHashHigh    // 06 = ability.xml, 07 = hashCode
+        case bare               // name, version and operation only
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .abilityHash: return L("1: ability.xml in 04, hashCode in 05", "1: ability.xml 04'te, hashCode 05'te")
+            case .hashAbility: return L("2: hashCode in 04, ability.xml in 05", "2: hashCode 04'te, ability.xml 05'te")
+            case .abilityHashHigh: return L("3: ability.xml in 06, hashCode in 07", "3: ability.xml 06'da, hashCode 07'de")
+            case .bare: return L("4: name and version only", "4: yalnızca ad ve sürüm")
+            }
         }
-        return [
-            make("1 op3 ability@04 hash@05", op: 3, [(0x04, ability), (0x05, hashCode)]),
-            make("2 op4 ability@04 hash@05", op: 4, [(0x04, ability), (0x05, hashCode)]),
-            make("3 op5 ability@04 hash@05", op: 5, [(0x04, ability), (0x05, hashCode)]),
-            make("4 op0 ability@04 hash@05", op: 0, [(0x04, ability), (0x05, hashCode)]),
-            make("5 op3 hash@04 ability@05", op: 3, [(0x04, hashCode), (0x05, ability)]),
-            make("6 no-op ability@03 hash@04", op: nil, [(0x03, ability), (0x04, hashCode)]),
-        ]
+
+        var shortLabel: String { String(label.prefix(1)) }
     }
 
-    // The watch accepted it: result 0x7F = 100000, or an answer without an error code
-    static func accepted(_ reply: HuaweiTLV?) -> Bool {
-        guard let reply, !reply.items.isEmpty else { return false }
+    static var currentLayout: Layout {
+        UserDefaults.standard.string(forKey: layoutKey).flatMap(Layout.init(rawValue:)) ?? .abilityHash
+    }
+
+    static func message(fileName: String, ability: [UInt8]?, hashCode: [UInt8]?, layout: Layout) -> HuaweiTLV {
+        let (name, version) = WatchFaceService.split(fileName)
+        var tlv = HuaweiTLV().with(0x01, Array(name.utf8)).with(0x02, Array(version.utf8)).with(0x03, [operation])
+        let fields: [(UInt8, [UInt8]?)]
+        switch layout {
+        case .abilityHash: fields = [(0x04, ability), (0x05, hashCode)]
+        case .hashAbility: fields = [(0x04, hashCode), (0x05, ability)]
+        case .abilityHashHigh: fields = [(0x06, ability), (0x07, hashCode)]
+        case .bare: fields = []
+        }
+        for (tag, value) in fields { if let value { tlv = tlv.with(tag, value) } }
+        return tlv
+    }
+
+    // The watch took it: it echoes the face's name and reports no error (0x7F absent, 0 or 100000)
+    static func accepted(_ reply: HuaweiTLV?, name: String) -> Bool {
+        guard let reply, reply.value(0x01) == Array(name.utf8) else { return false }
         guard let code = reply.int(0x7F) else { return true }
-        return code == HuaweiPacket.resultSuccess
+        return code == 0 || code == HuaweiPacket.resultSuccess
     }
 
     // Every tag: short values as hex and number, printable text quoted, longer data as its length

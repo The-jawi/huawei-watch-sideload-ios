@@ -670,7 +670,14 @@ final class WatchLink: NSObject, ObservableObject {
                 let compatibility = WatchFaceCompatibility.evaluate(screenCode: face.screen, device: self.watchFaceParams)
                 self.watchFaceCompatibility = compatibility
                 self.append(compatibility.blocksInstall ? .error : .info, compatibility.label)
-                guard !compatibility.blocksInstall else {
+                // Probe mode may install a face made for another screen, to test the install steps with a package that
+                // has ability.xml and hashCode (the bundled faces); the face may look wrong and can be removed on the watch
+                let probing = WatchFaceProbe.isEnabled
+                if compatibility.blocksInstall && probing {
+                    self.append(.info, L("Probe mode: installing anyway as a test; the face may not fit this screen",
+                                         "Deneme modu: test için yine de kuruluyor; kadran bu ekrana uymayabilir"))
+                }
+                guard !compatibility.blocksInstall || probing else {
                     self.setFaceStage(.failed(compatibility.label))
                     return
                 }
@@ -682,7 +689,6 @@ final class WatchLink: NSObject, ObservableObject {
                 // A random numeric name with a version suffix (Gadgetbridge: always 1.0.0); what is sent and the
                 // version depend on the chosen upload method
                 let method = WatchFaceUploadMethod.current
-                let probing = WatchFaceProbe.isEnabled
                 // The probe uses a 10-digit ID, like the store faces and Huawei Health (29…: outside their 218… range)
                 let name = probing
                     ? method.uploadName(number: Int.random(in: 2_900_000_000..<3_000_000_000), faceVersion: face.version, digits: 10)
@@ -694,19 +700,18 @@ final class WatchLink: NSObject, ObservableObject {
                 if probing {
                     self.append(.info, L("Probe: ability.xml \(face.ability?.count ?? 0) bytes, hashCode \(face.hashCode?.count ?? 0) bytes, face \(name)",
                                          "Deneme: ability.xml \(face.ability?.count ?? 0) bayt, hashCode \(face.hashCode?.count ?? 0) bayt, kadran \(name)"))
-                    for variant in WatchFaceProbe.variants(fileName: name, ability: face.ability, hashCode: face.hashCode) {
-                        let bytes = variant.tlv.serialize().count
-                        do {
-                            let reply = try await session.rawRequest(WatchFaceService.serviceId, WatchFaceService.operationCommand, variant.tlv,
-                                                                     label: L("Probe \(variant.label) (\(bytes) bytes)", "Deneme \(variant.label) (\(bytes) bayt)"),
-                                                                     sliced: true)
-                            let ok = WatchFaceProbe.accepted(reply)
-                            self.append(ok ? .success : .info, L("Probe \(variant.label): watch answered ", "Deneme \(variant.label): saat yanıtı ")
-                                        + WatchFaceProbe.describe(reply) + (ok ? L(" -> accepted", " -> kabul") : ""))
-                            if ok { break }
-                        } catch {
-                            self.append(.info, L("Probe \(variant.label): no answer (\(error))", "Deneme \(variant.label): yanıt yok (\(error))"))
-                        }
+                    let layout = WatchFaceProbe.currentLayout
+                    let message = WatchFaceProbe.message(fileName: name, ability: face.ability, hashCode: face.hashCode, layout: layout)
+                    let bytes = message.serialize().count
+                    do {
+                        let reply = try await session.rawRequest(WatchFaceService.serviceId, WatchFaceService.operationCommand, message,
+                                                                 label: L("Probe op 5, layout \(layout.label) (\(bytes) bytes)", "Deneme op 5, düzen \(layout.label) (\(bytes) bayt)"),
+                                                                 sliced: true)
+                        let ok = WatchFaceProbe.accepted(reply, name: WatchFaceService.split(name).name)
+                        self.append(ok ? .success : .info, L("Probe op 5: watch answered ", "Deneme op 5: saat yanıtı ")
+                                    + WatchFaceProbe.describe(reply) + (ok ? L(" -> accepted", " -> kabul") : ""))
+                    } catch {
+                        self.append(.info, L("Probe op 5: no answer (\(error))", "Deneme op 5: yanıt yok (\(error))"))
                     }
                     self.append(.info, L("Probe finished; uploading the face now", "Deneme bitti; kadran şimdi yükleniyor"))
                 }

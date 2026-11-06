@@ -20,6 +20,7 @@ struct ContentView: View {
     @AppStorage(HuaweiSession.diagnosticsKey) private var pairingDiagnostics = false
     @AppStorage(WatchFaceUploadMethod.storageKey) private var faceUploadMethod = WatchFaceUploadMethod.bin.rawValue
     @AppStorage(WatchFaceProbe.storageKey) private var faceProbe = false
+    @AppStorage(WatchFaceProbe.layoutKey) private var faceProbeLayout = WatchFaceProbe.Layout.abilityHash.rawValue
     // Kept in the Keychain (CredentialStore), not in UserDefaults
     @State private var huaweiAccountId = CredentialStore.shared.string(CredentialStore.huaweiAccountKey) ?? ""
     @State private var confirmingFirstPairing = false
@@ -317,7 +318,7 @@ struct ContentView: View {
                 let compatibility = WatchFaceCompatibility.evaluate(screenCode: WatchFaceCatalog.screens[url] ?? "?", device: link.watchFaceParams)
                 VStack(alignment: .leading, spacing: 2) {
                     Button(L("Install the \(name) watch face", "\(name) kadranını saate kur")) { link.installWatchFace(url, title: name) }
-                        .disabled(link.busy != nil || compatibility.blocksInstall)
+                        .disabled(link.busy != nil || (compatibility.blocksInstall && !faceProbe))
                         .fontWeight(.semibold)
                     if link.watchFaceParams != nil {
                         Text(compatibility.label).font(.caption).foregroundStyle(.secondary)
@@ -348,8 +349,12 @@ struct ContentView: View {
             .pickerStyle(.menu)
             Toggle(L("Probe before install (experimental)", "Kurmadan önce dene (deneysel)"), isOn: $faceProbe)
             if faceProbe {
-                Text(L("Sends a few test 0x27/0x03 messages that name only the new face, logs the watch's answers, then uploads with a 10-digit ID. Never activates or deletes anything. Send the \"Probe\" lines from the log.",
-                       "Yalnızca yeni kadranı adlandıran birkaç deneme 0x27/0x03 mesajı gönderir, saatin yanıtlarını kaydeder, sonra 10 haneli kimlikle yükler. Hiçbir şeyi etkinleştirmez ya da silmez. Kayıttaki \"Deneme\" satırlarını gönder."))
+                Picker(L("Probe layout", "Deneme düzeni"), selection: $faceProbeLayout) {
+                    ForEach(WatchFaceProbe.Layout.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                .pickerStyle(.menu)
+                Text(L("Before the upload, sends one operation 5 message (0x27/0x03) naming only the new face, with the face's ability.xml and hashCode, logs the watch's answer, then uploads with a 10-digit ID. Faces for another screen can be installed as a test (the bundled ones have ability.xml and hashCode). Send the \"Probe\" lines and the result.",
+                       "Yüklemeden önce yalnızca yeni kadranı adlandıran bir işlem 5 mesajı (0x27/0x03) gönderir, kadranın ability.xml ve hashCode dosyalarıyla; saatin yanıtını kaydeder, sonra 10 haneli kimlikle yükler. Başka ekran için yapılmış kadranlar test olarak kurulabilir (gelen kadranlarda ability.xml ve hashCode var). \"Deneme\" satırlarını ve sonucu gönder."))
                     .font(.caption).foregroundStyle(.secondary)
             }
             ForEach(library.sorted) { entry in
@@ -379,7 +384,7 @@ struct ContentView: View {
 
     private func faceRow(_ entry: FaceLibrary.Entry) -> some View {
         let analysis = entry.analysis
-        let blocked = analysis.status == .incompatible || analysis.status == .corrupted
+        let blocked = analysis.status == .corrupted || (analysis.status == .incompatible && !faceProbe)
         let color: Color = switch analysis.status {
         case .compatible: .green
         case .unknown: .orange
