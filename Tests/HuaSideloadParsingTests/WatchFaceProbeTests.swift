@@ -8,10 +8,10 @@ final class WatchFaceProbeTests: XCTestCase {
     }
 
     private let ability = Array("<attribute/>".utf8)
-    private let hash = Array("AA,BB,CC,DD".utf8)
+    private let hashBytes = Array("AA,BB,CC,DD".utf8)
 
     func testEveryVariantNamesOnlyTheNewFace() {
-        let variants = WatchFaceProbe.variants(fileName: "2912345678_1.0.0", ability: ability, hashCode: hash)
+        let variants = WatchFaceProbe.variants(fileName: "2912345678_1.0.0", ability: ability, hashCode: hashBytes)
         XCTAssertEqual(variants.count, 6)
         for v in variants {
             XCTAssertEqual(v.tlv.value(0x01), Array("2912345678".utf8), v.label)
@@ -21,7 +21,7 @@ final class WatchFaceProbeTests: XCTestCase {
 
     // Activate (1) and delete (2) are never sent
     func testNoActivateOrDelete() {
-        for v in WatchFaceProbe.variants(fileName: "2912345678_1.0.0", ability: ability, hashCode: hash) {
+        for v in WatchFaceProbe.variants(fileName: "2912345678_1.0.0", ability: ability, hashCode: hashBytes) {
             if let op = v.tlv.value(0x03), op.count == 1 {
                 XCTAssertFalse(WatchFaceProbe.forbiddenOperations.contains(op[0]), v.label)
             }
@@ -29,14 +29,14 @@ final class WatchFaceProbeTests: XCTestCase {
     }
 
     func testLayouts() {
-        let v = WatchFaceProbe.variants(fileName: "2912345678_1.0.0", ability: ability, hashCode: hash)
+        let v = WatchFaceProbe.variants(fileName: "2912345678_1.0.0", ability: ability, hashCode: hashBytes)
         XCTAssertEqual(v[0].tlv.value(0x03), [3])
         XCTAssertEqual(v[0].tlv.value(0x04), ability)
-        XCTAssertEqual(v[0].tlv.value(0x05), hash)
-        XCTAssertEqual(v[4].tlv.value(0x04), hash)
+        XCTAssertEqual(v[0].tlv.value(0x05), hashBytes)
+        XCTAssertEqual(v[4].tlv.value(0x04), hashBytes)
         XCTAssertEqual(v[4].tlv.value(0x05), ability)
         XCTAssertEqual(v[5].tlv.value(0x03), ability)
-        XCTAssertEqual(v[5].tlv.value(0x04), hash)
+        XCTAssertEqual(v[5].tlv.value(0x04), hashBytes)
     }
 
     // A package without ability.xml or hashCode: those tags are left out, nothing else changes
