@@ -19,6 +19,7 @@ struct ContentView: View {
     @AppStorage("filmModeV2") private var filmModeOn = false
     @AppStorage(HuaweiSession.diagnosticsKey) private var pairingDiagnostics = false
     @AppStorage(WatchFaceUploadMethod.storageKey) private var faceUploadMethod = WatchFaceUploadMethod.bin.rawValue
+    @AppStorage(WatchFaceProbe.storageKey) private var faceProbe = false
     // Kept in the Keychain (CredentialStore), not in UserDefaults
     @State private var huaweiAccountId = CredentialStore.shared.string(CredentialStore.huaweiAccountKey) ?? ""
     @State private var confirmingFirstPairing = false
@@ -345,6 +346,12 @@ struct ContentView: View {
                 ForEach(WatchFaceUploadMethod.allCases) { Text($0.label).tag($0.rawValue) }
             }
             .pickerStyle(.menu)
+            Toggle(L("Probe before install (experimental)", "Kurmadan önce dene (deneysel)"), isOn: $faceProbe)
+            if faceProbe {
+                Text(L("Sends a few test 0x27/0x03 messages that name only the new face, logs the watch's answers, then uploads with a 10-digit ID. Never activates or deletes anything. Send the \"Probe\" lines from the log.",
+                       "Yalnızca yeni kadranı adlandıran birkaç deneme 0x27/0x03 mesajı gönderir, saatin yanıtlarını kaydeder, sonra 10 haneli kimlikle yükler. Hiçbir şeyi etkinleştirmez ya da silmez. Kayıttaki \"Deneme\" satırlarını gönder."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             ForEach(library.sorted) { entry in
                 faceRow(entry)
             }
